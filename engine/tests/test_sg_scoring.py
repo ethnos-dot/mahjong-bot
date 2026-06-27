@@ -39,6 +39,17 @@ def test_seven_pairs():
     assert "All Pairs (Seven Pairs)" in result.breakdown
 
 
+def test_dragon_pung_decomposes():
+    # Regression: a standard hand with an honor (dragon/wind) pung must not
+    # crash decomposition (honors were once mis-read as dot-suit tiles).
+    tiles = parse_tiles(
+        ["RD", "RD", "RD", "1B", "2B", "3B", "4B", "5B", "6B", "7B", "8B", "9B", "5C", "5C"]
+    )
+    ctx = HandContext(seat_wind="EW", round_wind="EW")
+    result = score_hand(tiles, ctx)
+    assert result.breakdown.get("Dragon Pung") == 1
+
+
 def test_fan_to_value_doubling():
     assert fan_to_value(0, base_unit=1) == 1
     assert fan_to_value(1, base_unit=1) == 1

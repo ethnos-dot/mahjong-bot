@@ -41,8 +41,9 @@ def _decompose_sets(counter: Counter) -> list[list[TileSet]]:
         for rest in _decompose_sets(nxt):
             results.append([TileSet("pung", (Tile(code),) * 3)] + rest)
 
-    # Try chow (sequence) - only for suited tiles
-    if len(code) == 2 and code[1] in "BCD":
+    # Try chow (sequence) - only for suited tiles (digit-led; honors like RD/WD
+    # also end in B/C/D letters but must never be treated as a suit).
+    if len(code) == 2 and code[0].isdigit() and code[1] in "BCD":
         rank, suit = int(code[0]), code[1]
         c2, c3 = f"{rank + 1}{suit}", f"{rank + 2}{suit}"
         if rank <= 7 and counter.get(c2, 0) > 0 and counter.get(c3, 0) > 0:
