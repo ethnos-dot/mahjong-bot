@@ -49,6 +49,7 @@
       font-size: 1.05rem;
       font-weight: 600;
       text-align: center;
+      cursor: pointer;
     }
     .action-btn.selected {
       background: var(--tg-theme-button-color, #2ea6ff);
@@ -69,8 +70,132 @@
       color: var(--tg-theme-button-text-color, #fff);
       font-size: 1rem;
       font-weight: 600;
+      cursor: pointer;
     }
-    #confirmBtn:disabled { opacity: 0.4; }
+    #confirmBtn:disabled { opacity: 0.4; cursor: default; }
+
+    /* --- Mode toggle --- */
+    .mode-toggle {
+      display: flex;
+      border: 1px solid var(--tg-theme-hint-color, #ccc);
+      border-radius: 10px;
+      overflow: hidden;
+      margin-bottom: 10px;
+    }
+    .mode-tab {
+      flex: 1;
+      padding: 10px 0;
+      text-align: center;
+      font-size: 0.88rem;
+      font-weight: 600;
+      cursor: pointer;
+      background: var(--tg-theme-secondary-bg-color, #f2f2f2);
+      color: var(--tg-theme-hint-color, #888);
+    }
+    .mode-tab.active {
+      background: var(--tg-theme-button-color, #2ea6ff);
+      color: var(--tg-theme-button-text-color, #fff);
+    }
+
+    /* --- Tile picker grid --- */
+    .tile-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+    }
+    .tile-btn {
+      position: relative;
+      min-width: 36px;
+      height: 36px;
+      border: 1px solid var(--tg-theme-hint-color, #ccc);
+      border-radius: 6px;
+      background: var(--tg-theme-secondary-bg-color, #f2f2f2);
+      color: inherit;
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-align: center;
+      line-height: 36px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .tile-btn.has-tiles {
+      background: var(--tg-theme-button-color, #2ea6ff);
+      color: var(--tg-theme-button-text-color, #fff);
+      border-color: transparent;
+    }
+    .tile-btn.maxed {
+      opacity: 0.4;
+    }
+    .tile-count {
+      position: absolute;
+      top: -5px;
+      right: -5px;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #e74c3c;
+      color: #fff;
+      font-size: 0.65rem;
+      line-height: 16px;
+      text-align: center;
+      font-weight: 700;
+    }
+    .tile-section-label {
+      font-size: 0.7rem;
+      color: var(--tg-theme-hint-color, #888);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin: 8px 0 4px;
+    }
+    .tile-count-indicator {
+      font-size: 0.85rem;
+      font-weight: 600;
+      margin: 6px 0 4px;
+    }
+    .tile-count-indicator.ready { color: #27ae60; }
+    .tile-count-indicator.over  { color: #e74c3c; }
+
+    /* Win tile picker: chips from selected tiles */
+    .win-tile-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .win-tile-chip {
+      padding: 7px 10px;
+      border: 1px solid var(--tg-theme-hint-color, #ccc);
+      border-radius: 8px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      background: var(--tg-theme-secondary-bg-color, #f2f2f2);
+      cursor: pointer;
+      user-select: none;
+    }
+    .win-tile-chip.selected {
+      background: var(--tg-theme-button-color, #2ea6ff);
+      color: var(--tg-theme-button-text-color, #fff);
+      border-color: transparent;
+    }
+
+    .flag-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+    }
+    .flag-chip {
+      border: 1px solid var(--tg-theme-hint-color, #ccc);
+      border-radius: 9px;
+      padding: 8px 11px;
+      font-size: 0.85rem;
+      background: var(--tg-theme-secondary-bg-color, #f2f2f2);
+      cursor: pointer;
+      user-select: none;
+    }
+    .flag-chip.on {
+      background: var(--tg-theme-button-color, #2ea6ff);
+      color: var(--tg-theme-button-text-color, #fff);
+      border-color: transparent;
+    }
   </style>
 </head>
 <body>
@@ -128,8 +253,15 @@
     </div>
   </div>
 
-  <!-- RIICHI: manual han/fu win entry (shown when ?type=riichi) -->
+  <!-- RIICHI: auto tile-picker + manual han/fu fallback -->
   <div class="panel" id="panel-riichi">
+    <!-- Mode toggle -->
+    <div class="mode-toggle">
+      <div class="mode-tab active" id="tab-auto">Auto (tile pick)</div>
+      <div class="mode-tab" id="tab-manual">Manual (han+fu)</div>
+    </div>
+
+    <!-- Shared fields -->
     <h2>Winner</h2><div class="row" data-pick="riichi.winner"></div>
     <h2>Dealer (East) this hand</h2><div class="row" data-pick="riichi.dealer"></div>
     <h2>Win type</h2>
@@ -140,12 +272,60 @@
     <div id="riichi-discarder-section" style="display:none">
       <h2>Discarder</h2><div class="row" data-pick="riichi.discarder"></div>
     </div>
-    <h2>Han</h2><div class="row" data-pick="riichi.han"></div>
-    <div id="riichi-fu-section">
-      <h2>Fu <small>(ignored at 5+ han)</small></h2><div class="row" data-pick="riichi.fu"></div>
-    </div>
-    <h2>Dora <small>incl. aka / ura</small></h2><div class="row" data-pick="riichi.dora"></div>
     <h2>Honba</h2><div class="row" data-pick="riichi.honba"></div>
+
+    <!-- AUTO mode sub-form -->
+    <div id="auto-subform">
+      <h2>Winner's Seat Wind</h2>
+      <div class="row" data-pick="riichi.seat_wind">
+        <div class="chip" data-value="EW">East</div>
+        <div class="chip" data-value="SW">South</div>
+        <div class="chip" data-value="WW">West</div>
+        <div class="chip" data-value="NW">North</div>
+      </div>
+      <h2>Round Wind</h2>
+      <div class="row" data-pick="riichi.round_wind">
+        <div class="chip" data-value="EW">East round</div>
+        <div class="chip" data-value="SW">South round</div>
+      </div>
+
+      <h2>Flags</h2>
+      <div class="flag-row">
+        <div class="flag-chip" data-flag="riichi">Riichi</div>
+        <div class="flag-chip" data-flag="double_riichi">Dbl Riichi</div>
+        <div class="flag-chip" data-flag="ippatsu">Ippatsu</div>
+        <div class="flag-chip" data-flag="haitei">Haitei/Houtei</div>
+        <div class="flag-chip" data-flag="rinshan">Rinshan</div>
+        <div class="flag-chip" data-flag="chankan">Chankan</div>
+      </div>
+      <h2>Dora (total incl. aka+ura)</h2><div class="row" data-pick="riichi.dora_auto"></div>
+
+      <h2>Hand Tiles (select 14)</h2>
+      <div class="tile-count-indicator" id="tile-count-label">0 / 14 selected</div>
+
+      <div class="tile-section-label">Man (Characters)</div>
+      <div class="tile-grid" id="grid-C"></div>
+      <div class="tile-section-label">Pin (Dots)</div>
+      <div class="tile-grid" id="grid-D"></div>
+      <div class="tile-section-label">Sou (Bamboo)</div>
+      <div class="tile-grid" id="grid-B"></div>
+      <div class="tile-section-label">Honors</div>
+      <div class="tile-grid" id="grid-H"></div>
+
+      <div id="win-tile-section" style="display:none">
+        <h2>Winning Tile <small>(which of the 14 completed the hand)</small></h2>
+        <div class="win-tile-grid" id="win-tile-grid"></div>
+      </div>
+    </div>
+
+    <!-- MANUAL mode sub-form -->
+    <div id="manual-subform" style="display:none">
+      <h2>Han</h2><div class="row" data-pick="riichi.han"></div>
+      <div id="riichi-fu-section">
+        <h2>Fu <small>(ignored at 5+ han)</small></h2><div class="row" data-pick="riichi.fu"></div>
+      </div>
+      <h2>Dora <small>incl. aka / ura</small></h2><div class="row" data-pick="riichi.dora"></div>
+    </div>
   </div>
 
   <button id="confirmBtn" disabled>Select an action</button>
@@ -157,14 +337,12 @@
 
     const params = new URLSearchParams(window.location.search);
     const players = (params.get("players") || "Player1,Player2,Player3,Player4").split(",");
-
     const gameType = params.get("type") || "sg";
 
-    // state[action] holds that action's field selections
+    // ---------- SG state ----------
     const state = { hu: {}, zimo: {}, gang: {}, yao: {}, riichi: {} };
     let activeAction = null;
 
-    // Single-select chip row. data-pick="action.field"
     function bindRow(row) {
       const [action, field] = row.dataset.pick.split(".");
       row.querySelectorAll(".chip").forEach((chip) => {
@@ -177,9 +355,9 @@
       });
     }
 
-    // Fill a row with one chip per option [value, label].
     function fillRow(selector, options) {
       const row = document.querySelector(selector);
+      if (!row) return;
       options.forEach(([value, label]) => {
         const chip = document.createElement("div");
         chip.className = "chip";
@@ -191,35 +369,43 @@
     }
 
     const playerOpts = players.map((p) => [p, p]);
-    const taiOpts = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => [String(n), String(n)]);
+    const taiOpts = [1,2,3,4,5,6,7,8,9,10].map((n) => [String(n), String(n)]);
 
-    // Player pickers
-    ["hu.winner", "hu.discarder", "zimo.winner", "gang.konger", "gang.shooter", "yao.biter", "yao.target"]
+    ["hu.winner","hu.discarder","zimo.winner","gang.konger","gang.shooter","yao.biter","yao.target"]
       .forEach((p) => fillRow(`[data-pick="${p}"]`, playerOpts));
-    // Tai pickers
     fillRow('[data-pick="hu.tai"]', taiOpts);
     fillRow('[data-pick="zimo.tai"]', taiOpts);
-    // Static rows (gang_type, yao_type, scope) already have chips in HTML
     document.querySelectorAll('[data-pick="gang.gang_type"],[data-pick="yao.yao_type"],[data-pick="yao.scope"]')
       .forEach(bindRow);
 
-    // --- Riichi mode: hide the SG action menu, show the win-entry form ---
+    // ---------- RIICHI mode ----------
     if (gameType === "riichi") {
       document.querySelector(".actions").style.display = "none";
       document.querySelector("h1").textContent = "🀄 Riichi — record a win";
       document.getElementById("panel-riichi").classList.add("active");
 
-      ["riichi.winner", "riichi.dealer", "riichi.discarder"]
-        .forEach((p) => fillRow(`[data-pick="${p}"]`, playerOpts));
-      fillRow('[data-pick="riichi.han"]', [...Array(13)].map((_, i) => [String(i + 1), i === 12 ? "13+" : String(i + 1)]));
-      fillRow('[data-pick="riichi.fu"]', [20, 25, 30, 40, 50, 60, 70, 80, 90, 100, 110].map((n) => [String(n), String(n)]));
-      fillRow('[data-pick="riichi.dora"]', [...Array(11)].map((_, i) => [String(i), String(i)]));
-      fillRow('[data-pick="riichi.honba"]', [...Array(7)].map((_, i) => [String(i), String(i)]));
+      // Shared player pickers
+      ["riichi.winner","riichi.dealer","riichi.discarder"].forEach((p) => fillRow(`[data-pick="${p}"]`, playerOpts));
+      // Shared honba
+      fillRow('[data-pick="riichi.honba"]', [...Array(7)].map((_,i) => [String(i), String(i)]));
+      // Win type chips already in HTML
       document.querySelectorAll('[data-pick="riichi.win_type"]').forEach(bindRow);
+      // Seat/round wind chips already in HTML
+      document.querySelectorAll('[data-pick="riichi.seat_wind"],[data-pick="riichi.round_wind"]').forEach(bindRow);
+      // Dora auto
+      fillRow('[data-pick="riichi.dora_auto"]', [...Array(11)].map((_,i) => [String(i), String(i)]));
+      // Manual subform
+      fillRow('[data-pick="riichi.han"]', [...Array(13)].map((_,i) => [String(i+1), i===12 ? "13+" : String(i+1)]));
+      fillRow('[data-pick="riichi.fu"]', [20,25,30,40,50,60,70,80,90,100,110].map((n)=>[String(n),String(n)]));
+      fillRow('[data-pick="riichi.dora"]', [...Array(11)].map((_,i)=>[String(i),String(i)]));
+
       activeAction = "riichi";
+      buildTileGrid();
+      bindFlags();
+      bindModeToggle();
     }
 
-    // Action button selection
+    // Action button selection (SG mode)
     document.querySelectorAll(".action-btn").forEach((btn) => {
       btn.onclick = () => {
         activeAction = btn.dataset.action;
@@ -255,6 +441,202 @@
       updateConfirm();
     }
 
+    // ---------- Mode toggle ----------
+    let riichiMode = "auto"; // "auto" | "manual"
+
+    function bindModeToggle() {
+      document.getElementById("tab-auto").onclick = () => setMode("auto");
+      document.getElementById("tab-manual").onclick = () => setMode("manual");
+    }
+
+    function setMode(m) {
+      riichiMode = m;
+      document.getElementById("tab-auto").classList.toggle("active", m === "auto");
+      document.getElementById("tab-manual").classList.toggle("active", m === "manual");
+      document.getElementById("auto-subform").style.display = m === "auto" ? "block" : "none";
+      document.getElementById("manual-subform").style.display = m === "manual" ? "block" : "none";
+      updateConfirm();
+    }
+
+    // ---------- Flag chips ----------
+    const flags = {};
+
+    function bindFlags() {
+      document.querySelectorAll(".flag-chip").forEach((chip) => {
+        const f = chip.dataset.flag;
+        flags[f] = false;
+        chip.onclick = () => {
+          // riichi and double_riichi are mutually exclusive
+          if (f === "riichi" && !flags[f]) flags["double_riichi"] = false;
+          if (f === "double_riichi" && !flags[f]) flags["riichi"] = false;
+          flags[f] = !flags[f];
+          renderFlags();
+          updateConfirm();
+        };
+      });
+    }
+
+    function renderFlags() {
+      document.querySelectorAll(".flag-chip").forEach((chip) => {
+        chip.classList.toggle("on", !!flags[chip.dataset.flag]);
+      });
+    }
+
+    // ---------- Tile picker ----------
+    // tile counts: code -> count (0-4)
+    const tileCounts = {};
+    let winTile = null; // selected winning tile code (with multiplicity index)
+
+    const SUITED_TILES = [
+      ...Array.from({length:9}, (_,i) => `${i+1}C`),
+      ...Array.from({length:9}, (_,i) => `${i+1}D`),
+      ...Array.from({length:9}, (_,i) => `${i+1}B`),
+    ];
+    const HONOR_TILES = ["EW","SW","WW","NW","RD","GD","WD"];
+    const ALL_TILES = [...SUITED_TILES, ...HONOR_TILES];
+
+    const TILE_LABELS = {
+      "1C":"1m","2C":"2m","3C":"3m","4C":"4m","5C":"5m","6C":"6m","7C":"7m","8C":"8m","9C":"9m",
+      "1D":"1p","2D":"2p","3D":"3p","4D":"4p","5D":"5p","6D":"6p","7D":"7p","8D":"8d","9D":"9p",
+      "1B":"1s","2B":"2s","3B":"3s","4B":"4s","5B":"5s","6B":"6s","7B":"7s","8B":"8s","9B":"9s",
+      "EW":"東","SW":"南","WW":"西","NW":"北","RD":"中","GD":"發","WD":"白",
+    };
+
+    function totalTiles() {
+      return Object.values(tileCounts).reduce((a,b)=>a+b, 0);
+    }
+
+    // Return list of (code, index) for win tile picker — one entry per tile instance
+    function tileInstances() {
+      const out = [];
+      ALL_TILES.forEach(code => {
+        for (let i = 0; i < (tileCounts[code]||0); i++) out.push([code, i]);
+      });
+      return out;
+    }
+
+    function buildTileGrid() {
+      const grids = { C: "grid-C", D: "grid-D", B: "grid-B" };
+      for (const suit of ["C","D","B"]) {
+        const el = document.getElementById(grids[suit]);
+        for (let r = 1; r <= 9; r++) {
+          const code = `${r}${suit}`;
+          tileCounts[code] = 0;
+          el.appendChild(makeTileBtn(code));
+        }
+      }
+      const hEl = document.getElementById("grid-H");
+      for (const code of HONOR_TILES) {
+        tileCounts[code] = 0;
+        hEl.appendChild(makeTileBtn(code));
+      }
+    }
+
+    function makeTileBtn(code) {
+      const btn = document.createElement("div");
+      btn.className = "tile-btn";
+      btn.id = "tbtn-" + code;
+      btn.textContent = TILE_LABELS[code] || code;
+      btn.onclick = () => addTile(code);
+
+      // long-press to remove
+      let pressTimer;
+      btn.addEventListener("touchstart", () => {
+        pressTimer = setTimeout(() => removeTile(code), 500);
+      }, {passive: true});
+      btn.addEventListener("touchend", () => clearTimeout(pressTimer), {passive: true});
+      btn.addEventListener("contextmenu", (e) => { e.preventDefault(); removeTile(code); });
+      return btn;
+    }
+
+    function addTile(code) {
+      if (totalTiles() >= 14) return;
+      if ((tileCounts[code]||0) >= 4) return;
+      tileCounts[code] = (tileCounts[code]||0) + 1;
+      refreshTileBtn(code);
+      refreshTileCount();
+      refreshWinTileSection();
+      updateConfirm();
+    }
+
+    function removeTile(code) {
+      if ((tileCounts[code]||0) === 0) return;
+      tileCounts[code]--;
+      // if win tile was this code, clear it if count is now 0
+      if (winTile === code && tileCounts[code] === 0) {
+        winTile = null;
+      }
+      refreshTileBtn(code);
+      refreshTileCount();
+      refreshWinTileSection();
+      updateConfirm();
+    }
+
+    function refreshTileBtn(code) {
+      const btn = document.getElementById("tbtn-" + code);
+      if (!btn) return;
+      const cnt = tileCounts[code] || 0;
+      btn.classList.toggle("has-tiles", cnt > 0);
+      btn.classList.toggle("maxed", cnt >= 4 || totalTiles() >= 14);
+      // badge
+      let badge = btn.querySelector(".tile-count");
+      if (cnt > 0) {
+        if (!badge) {
+          badge = document.createElement("span");
+          badge.className = "tile-count";
+          btn.appendChild(badge);
+        }
+        badge.textContent = cnt;
+      } else if (badge) {
+        badge.remove();
+      }
+    }
+
+    function refreshAllTileBtns() {
+      ALL_TILES.forEach(code => refreshTileBtn(code));
+    }
+
+    function refreshTileCount() {
+      const t = totalTiles();
+      const el = document.getElementById("tile-count-label");
+      el.textContent = `${t} / 14 selected`;
+      el.className = "tile-count-indicator" + (t === 14 ? " ready" : t > 14 ? " over" : "");
+      refreshAllTileBtns();
+    }
+
+    function refreshWinTileSection() {
+      const t = totalTiles();
+      const sec = document.getElementById("win-tile-section");
+      const grid = document.getElementById("win-tile-grid");
+      if (t !== 14) {
+        sec.style.display = "none";
+        winTile = null;
+        return;
+      }
+      sec.style.display = "block";
+      grid.innerHTML = "";
+      const instances = tileInstances();
+      // de-duplicate for display: show each unique code once
+      const seen = new Set();
+      instances.forEach(([code]) => {
+        if (seen.has(code)) return;
+        seen.add(code);
+        const chip = document.createElement("div");
+        chip.className = "win-tile-chip" + (winTile === code ? " selected" : "");
+        chip.textContent = TILE_LABELS[code] || code;
+        chip.onclick = () => {
+          winTile = code;
+          grid.querySelectorAll(".win-tile-chip").forEach(c => c.classList.remove("selected"));
+          chip.classList.add("selected");
+          updateConfirm();
+        };
+        grid.appendChild(chip);
+      });
+      // if winTile was deselected because tile removed, clear
+      if (winTile && (tileCounts[winTile]||0) === 0) winTile = null;
+    }
+
+    // ---------- Validation ----------
     function isReady() {
       const s = state[activeAction] || {};
       switch (activeAction) {
@@ -271,10 +653,17 @@
           if (s.scope === "one") return s.target && s.target !== s.biter;
           return true;
         case "riichi":
-          if (!s.winner || !s.dealer || !s.win_type || !s.han) return false;
+          if (!s.winner || !s.dealer || !s.win_type) return false;
           if (s.win_type === "ron" && (!s.discarder || s.discarder === s.winner)) return false;
-          if (parseInt(s.han) < 5 && !s.fu) return false;
-          return true;
+          if (riichiMode === "auto") {
+            if (!s.seat_wind || !s.round_wind) return false;
+            if (totalTiles() !== 14 || !winTile) return false;
+            return true;
+          } else {
+            if (!s.han) return false;
+            if (parseInt(s.han) < 5 && !s.fu) return false;
+            return true;
+          }
         default:
           return false;
       }
@@ -291,22 +680,46 @@
       btn.textContent = btn.disabled ? "Fill in the details" : "Confirm " + activeAction.toUpperCase();
     }
 
+    // ---------- Submit ----------
     document.getElementById("confirmBtn").onclick = () => {
       if (!isReady()) return;
       let payload;
       if (activeAction === "riichi") {
         const s = state.riichi;
-        payload = {
+        const base = {
           action: "riichi",
           winner: s.winner,
           dealer: s.dealer,
           tsumo: s.win_type === "tsumo",
           discarder: s.win_type === "ron" ? s.discarder : null,
-          han: parseInt(s.han),
-          fu: s.fu ? parseInt(s.fu) : 30,
-          dora: parseInt(s.dora || "0"),
           honba: parseInt(s.honba || "0"),
         };
+        if (riichiMode === "auto") {
+          // Build tile list from counts
+          const tiles = [];
+          ALL_TILES.forEach(code => {
+            for (let i = 0; i < (tileCounts[code]||0); i++) tiles.push(code);
+          });
+          payload = Object.assign(base, {
+            tiles,
+            win_tile: winTile,
+            seat_wind: s.seat_wind,
+            round_wind: s.round_wind,
+            riichi: flags.riichi || false,
+            double_riichi: flags.double_riichi || false,
+            ippatsu: flags.ippatsu || false,
+            haitei: flags.haitei || false,
+            rinshan: flags.rinshan || false,
+            chankan: flags.chankan || false,
+            dora: parseInt(s.dora_auto || "0"),
+          });
+        } else {
+          payload = Object.assign(base, {
+            han: parseInt(s.han),
+            fu: s.fu ? parseInt(s.fu) : 30,
+            dora: parseInt(s.dora || "0"),
+          });
+        }
       } else {
         payload = Object.assign({ action: activeAction }, state[activeAction]);
       }

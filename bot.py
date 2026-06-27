@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
+from engine.riichi.analyze import CalledMeld, WinContext, analyze as riichi_analyze
 from engine.riichi.scoring import score as riichi_score
 from engine.sg.payout import (
     Transfer,
@@ -218,19 +219,59 @@ def _build_action(session, data: dict):
 
 
 def _build_riichi(session, data: dict):
-    """Settle a riichi win from manual han/fu. The `dealer` field names who is
-    East this hand; the winner is dealer iff winner == dealer."""
+    """Settle a riichi win.  Two paths:
+    - Auto: payload has 'tiles' (list of tile codes) + optional 'called' melds
+      => calls the analyzer to detect yaku/fu automatically.
+    - Manual: payload has 'han' + 'fu' => uses them directly.
+    Both paths share the same transfer-building logic.
+    """
     winner = data["winner"]
     dealer = data["dealer"]
     tsumo = bool(data["tsumo"])
     discarder = data.get("discarder")
-    han = int(data["han"]) + int(data.get("dora", 0))
-    fu = int(data.get("fu", 30))
     honba = int(data.get("honba", 0))
     players = session.players
     is_dealer = winner == dealer
 
-    s = riichi_score(han, fu, dealer=is_dealer, tsumo=tsumo, players=len(players), honba=honba)
+    if "tiles" in data:
+        # --- auto path: analyze from tile codes ---
+        seat_wind = data.get("seat_wind", "SW")   # winner's seat wind
+        round_wind = data.get("round_wind", "EW")
+        win_tile = data["win_tile"]
+        ctx = WinContext(
+            seat_wind=seat_wind,
+            round_wind=round_wind,
+            win_tile=win_tile,
+            tsumo=tsumo,
+            riichi=bool(data.get("riichi", False)),
+            double_riichi=bool(data.get("double_riichi", False)),
+            ippatsu=bool(data.get("ippatsu", False)),
+            dora=int(data.get("dora", 0)),
+            aka=int(data.get("aka", 0)),
+            players=len(players),
+            honba=honba,
+        )
+        called_raw = data.get("called", [])
+        called = [CalledMeld(m["kind"], tuple(m["codes"]), m.get("concealed", False))
+                  for m in called_raw]
+        result = riichi_analyze(data["tiles"], called, ctx)
+        if not result.ok:
+            raise ValueError(f"invalid hand: {result.error}")
+        s = result.score
+        han, fu = result.han, result.fu
+        yaku_str = ", ".join(
+            (n if h == 0 else f"{n} {h}han") for n, h in result.yaku
+        )
+        if result.yakuman:
+            yaku_str = " + ".join(result.yakuman)
+        auto_note = f"\nYaku: {yaku_str}"
+    else:
+        # --- manual path: user supplied han + fu ---
+        han = int(data["han"]) + int(data.get("dora", 0))
+        fu = int(data.get("fu", 30))
+        s = riichi_score(han, fu, dealer=is_dealer, tsumo=tsumo,
+                         players=len(players), honba=honba)
+        auto_note = ""
 
     transfers: list[Transfer] = []
     if not tsumo:
@@ -249,8 +290,9 @@ def _build_riichi(session, data: dict):
         win_desc = "tsumo"
 
     limit = f" {s.limit}" if s.limit else ""
-    fu_note = f" {fu}fu" if han < 5 else ""
-    summary = f"Riichi: {winner} {win_desc} - {han} han{fu_note}{limit} ({s.from_payments:,} pts)"
+    fu_note = f" {fu}fu" if han > 0 and han < 5 else ""
+    summary = (f"Riichi: {winner} {win_desc} - {han} han{fu_note}{limit} "
+               f"({s.from_payments:,} pts){auto_note}")
     return summary, transfers
 
 
