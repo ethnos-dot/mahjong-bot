@@ -4,7 +4,7 @@ import os
 from urllib.parse import quote
 
 from dotenv import load_dotenv
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
+from telegram import KeyboardButton, ReplyKeyboardMarkup, Update, WebAppInfo
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from engine.riichi.analyze import CalledMeld, WinContext, analyze as riichi_analyze
@@ -118,11 +118,14 @@ async def newriichi(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # Pure calculator - no roster/players needed. Mark the chat as riichi so
     # /play reopens the calculator too.
     start_session(update.effective_chat.id, [], game_type="riichi")
-    keyboard = InlineKeyboardMarkup(
-        [[InlineKeyboardButton(
+    # NOTE: web_app_data only reaches the bot from a *reply keyboard* button
+    # (sendData is unavailable from inline buttons / menu button / main app).
+    keyboard = ReplyKeyboardMarkup(
+        [[KeyboardButton(
             text="🀄 Open Riichi Calculator",
             web_app=WebAppInfo(url=f"{WEBAPP_URL}?type=riichi"),
-        )]]
+        )]],
+        resize_keyboard=True,
     )
     await update.message.reply_text(
         "Riichi payout calculator (pure hand calc - nothing tracked):",
@@ -148,8 +151,10 @@ async def play(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     else:
         url = f"{WEBAPP_URL}?players={quote(','.join(session.players))}"
         label = "🀄 Open Action Menu"
-    keyboard = InlineKeyboardMarkup(
-        [[InlineKeyboardButton(text=label, web_app=WebAppInfo(url=url))]]
+    # Reply-keyboard button: required for the Mini App's sendData to reach the bot.
+    keyboard = ReplyKeyboardMarkup(
+        [[KeyboardButton(text=label, web_app=WebAppInfo(url=url))]],
+        resize_keyboard=True,
     )
     await update.message.reply_text("Tap below to record an action:", reply_markup=keyboard)
 
@@ -319,15 +324,10 @@ def _calc_riichi(data: dict) -> str:
 
 
 async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    session = get_session(update.effective_chat.id)
-    if not session:
-        await update.message.reply_text("No active session. Start one with /newgame first.")
-        return
-
     data = json.loads(update.effective_message.web_app_data.data)
     actioner = _actioner_name(update)
 
-    # Riichi is a pure hand calculator: compute & show, track nothing.
+    # Riichi is a pure hand calculator: no session needed - compute & show.
     if data.get("action") == "riichi":
         try:
             body = _calc_riichi(data)
@@ -335,6 +335,12 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text(f"Invalid hand: {e}")
             return
         await update.message.reply_text(f"🀄 Riichi calc\n{body}\n\n(by {actioner})")
+        return
+
+    # SG actions need an active session (players + running balances).
+    session = get_session(update.effective_chat.id)
+    if not session:
+        await update.message.reply_text("No active session. Start one with /newgame first.")
         return
 
     try:

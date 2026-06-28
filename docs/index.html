@@ -199,9 +199,15 @@
   </style>
 </head>
 <body>
-  <h1>🀄 Record an action</h1>
+  <h1 id="appTitle">🀄 What are you playing?</h1>
 
-  <div class="actions">
+  <!-- Game-type picker: the first screen when launched without a chosen game -->
+  <div id="game-picker" class="actions" style="display:none">
+    <div class="action-btn" id="pick-sg">🀄 Singaporean<br><small>4-player payout tracker</small></div>
+    <div class="action-btn" id="pick-riichi">🎴 Riichi<br><small>hand calculator</small></div>
+  </div>
+
+  <div class="actions" id="sg-actions">
     <div class="action-btn" data-action="hu">Hu (win)</div>
     <div class="action-btn" data-action="zimo">Zimo (self-draw)</div>
     <div class="action-btn" data-action="gang">Gang (kong)</div>
@@ -345,7 +351,7 @@
 
     const params = new URLSearchParams(window.location.search);
     const players = (params.get("players") || "Player1,Player2,Player3,Player4").split(",");
-    const gameType = params.get("type") || "sg";
+    const explicitType = params.get("type"); // "riichi" | "sg" | null (null => show picker)
 
     // ---------- SG state ----------
     const state = { hu: {}, zimo: {}, gang: {}, yao: {}, riichi: {} };
@@ -386,41 +392,25 @@
     document.querySelectorAll('[data-pick="gang.gang_type"],[data-pick="yao.yao_type"],[data-pick="yao.scope"]')
       .forEach(bindRow);
 
-    // ---------- RIICHI mode ----------
-    if (gameType === "riichi") {
-      document.querySelector(".actions").style.display = "none";
-      document.querySelector("h1").textContent = "🀄 Riichi — record a win";
-      document.getElementById("panel-riichi").classList.add("active");
+    // ---------- RIICHI setup (built always; the panel is only shown in riichi mode) ----------
+    fillRow('[data-pick="riichi.honba"]', [...Array(7)].map((_,i) => [String(i), String(i)]));
+    document.querySelectorAll(
+      '[data-pick="riichi.win_type"],[data-pick="riichi.players"],[data-pick="riichi.seat"],' +
+      '[data-pick="riichi.seat_wind"],[data-pick="riichi.round_wind"]'
+    ).forEach(bindRow);
+    state.riichi.players = "4"; // default yonma
+    const p4 = document.querySelector('[data-pick="riichi.players"] .chip[data-value="4"]');
+    if (p4) p4.classList.add("selected");
+    fillRow('[data-pick="riichi.dora_auto"]', [...Array(11)].map((_,i) => [String(i), String(i)]));
+    fillRow('[data-pick="riichi.han"]', [...Array(13)].map((_,i) => [String(i+1), i===12 ? "13+" : String(i+1)]));
+    fillRow('[data-pick="riichi.fu"]', [20,25,30,40,50,60,70,80,90,100,110].map((n)=>[String(n),String(n)]));
+    fillRow('[data-pick="riichi.dora"]', [...Array(11)].map((_,i)=>[String(i),String(i)]));
 
-      // Pure calculator: no players. Honba chips.
-      fillRow('[data-pick="riichi.honba"]', [...Array(7)].map((_,i) => [String(i), String(i)]));
-      // Static chip rows already in HTML
-      document.querySelectorAll(
-        '[data-pick="riichi.win_type"],[data-pick="riichi.players"],[data-pick="riichi.seat"],' +
-        '[data-pick="riichi.seat_wind"],[data-pick="riichi.round_wind"]'
-      ).forEach(bindRow);
-      // Default to 4 players (yonma)
-      state.riichi.players = "4";
-      const p4 = document.querySelector('[data-pick="riichi.players"] .chip[data-value="4"]');
-      if (p4) p4.classList.add("selected");
-      // Dora auto
-      fillRow('[data-pick="riichi.dora_auto"]', [...Array(11)].map((_,i) => [String(i), String(i)]));
-      // Manual subform
-      fillRow('[data-pick="riichi.han"]', [...Array(13)].map((_,i) => [String(i+1), i===12 ? "13+" : String(i+1)]));
-      fillRow('[data-pick="riichi.fu"]', [20,25,30,40,50,60,70,80,90,100,110].map((n)=>[String(n),String(n)]));
-      fillRow('[data-pick="riichi.dora"]', [...Array(11)].map((_,i)=>[String(i),String(i)]));
-
-      activeAction = "riichi";
-      // NB: buildTileGrid/bindFlags/bindModeToggle are called at the end of the
-      // script - they reference const state (tileCounts, flags) declared below,
-      // which would be in the temporal dead zone if called here.
-    }
-
-    // Action button selection (SG mode)
-    document.querySelectorAll(".action-btn").forEach((btn) => {
+    // Action button selection (SG mode) - only the SG menu buttons, not the picker
+    document.querySelectorAll("#sg-actions .action-btn").forEach((btn) => {
       btn.onclick = () => {
         activeAction = btn.dataset.action;
-        document.querySelectorAll(".action-btn").forEach((b) => b.classList.remove("selected"));
+        document.querySelectorAll("#sg-actions .action-btn").forEach((b) => b.classList.remove("selected"));
         btn.classList.add("selected");
         document.querySelectorAll(".panel").forEach((p) => p.classList.remove("active"));
         document.getElementById("panel-" + activeAction).classList.add("active");
@@ -732,14 +722,43 @@
       tg.close();
     };
 
-    // Riichi-only init (must run after the const/function declarations above).
-    if (gameType === "riichi") {
-      buildTileGrid();
-      bindFlags();
-      bindModeToggle();
-    }
+    // Build the riichi tile grid / flags / mode toggle (after their const decls).
+    buildTileGrid();
+    bindFlags();
+    bindModeToggle();
 
-    updateConfirm();
+    // ---------- Game-type picker / mode entry ----------
+    function showPicker() {
+      document.getElementById("game-picker").style.display = "grid";
+      document.getElementById("sg-actions").style.display = "none";
+      document.getElementById("panel-riichi").classList.remove("active");
+      document.getElementById("appTitle").textContent = "🀄 What are you playing?";
+      activeAction = null;
+      updateConfirm();
+    }
+    function enterSG() {
+      document.getElementById("game-picker").style.display = "none";
+      document.getElementById("sg-actions").style.display = "grid";
+      document.getElementById("panel-riichi").classList.remove("active");
+      document.getElementById("appTitle").textContent = "🀄 Record an action";
+      activeAction = null;
+      updateConfirm();
+    }
+    function enterRiichi() {
+      document.getElementById("game-picker").style.display = "none";
+      document.getElementById("sg-actions").style.display = "none";
+      document.getElementById("appTitle").textContent = "🎴 Riichi calculator";
+      document.getElementById("panel-riichi").classList.add("active");
+      activeAction = "riichi";
+      updateConfirm();
+    }
+    document.getElementById("pick-sg").onclick = enterSG;
+    document.getElementById("pick-riichi").onclick = enterRiichi;
+
+    // Initial screen: an explicit ?type= or ?players= skips the picker.
+    if (explicitType === "riichi") enterRiichi();
+    else if (explicitType === "sg" || params.has("players")) enterSG();
+    else showPicker();
   </script>
 </body>
 </html>
