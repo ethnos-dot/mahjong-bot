@@ -261,16 +261,16 @@
       <div class="mode-tab" id="tab-manual">Manual (han+fu)</div>
     </div>
 
-    <!-- Shared fields -->
-    <h2>Winner</h2><div class="row" data-pick="riichi.winner"></div>
-    <h2>Dealer (East) this hand</h2><div class="row" data-pick="riichi.dealer"></div>
+    <!-- Shared fields (pure hand calculator - no players) -->
     <h2>Win type</h2>
     <div class="row" data-pick="riichi.win_type">
       <div class="chip" data-value="ron">Ron (off discard)</div>
       <div class="chip" data-value="tsumo">Tsumo (self-draw)</div>
     </div>
-    <div id="riichi-discarder-section" style="display:none">
-      <h2>Discarder</h2><div class="row" data-pick="riichi.discarder"></div>
+    <h2>Players</h2>
+    <div class="row" data-pick="riichi.players">
+      <div class="chip" data-value="4">4 (yonma)</div>
+      <div class="chip" data-value="3">3 (sanma)</div>
     </div>
     <h2>Honba</h2><div class="row" data-pick="riichi.honba"></div>
     <h2>Riichi declaration</h2>
@@ -280,7 +280,7 @@
 
     <!-- AUTO mode sub-form -->
     <div id="auto-subform">
-      <h2>Winner's Seat Wind</h2>
+      <h2>Winner's Seat Wind <small>(East = dealer)</small></h2>
       <div class="row" data-pick="riichi.seat_wind">
         <div class="chip" data-value="EW">East</div>
         <div class="chip" data-value="SW">South</div>
@@ -323,6 +323,11 @@
 
     <!-- MANUAL mode sub-form -->
     <div id="manual-subform" style="display:none">
+      <h2>Seat</h2>
+      <div class="row" data-pick="riichi.seat">
+        <div class="chip" data-value="nondealer">Non-dealer</div>
+        <div class="chip" data-value="dealer">Dealer</div>
+      </div>
       <h2>Han</h2><div class="row" data-pick="riichi.han"></div>
       <div id="riichi-fu-section">
         <h2>Fu <small>(ignored at 5+ han)</small></h2><div class="row" data-pick="riichi.fu"></div>
@@ -387,14 +392,17 @@
       document.querySelector("h1").textContent = "🀄 Riichi — record a win";
       document.getElementById("panel-riichi").classList.add("active");
 
-      // Shared player pickers
-      ["riichi.winner","riichi.dealer","riichi.discarder"].forEach((p) => fillRow(`[data-pick="${p}"]`, playerOpts));
-      // Shared honba
+      // Pure calculator: no players. Honba chips.
       fillRow('[data-pick="riichi.honba"]', [...Array(7)].map((_,i) => [String(i), String(i)]));
-      // Win type chips already in HTML
-      document.querySelectorAll('[data-pick="riichi.win_type"]').forEach(bindRow);
-      // Seat/round wind chips already in HTML
-      document.querySelectorAll('[data-pick="riichi.seat_wind"],[data-pick="riichi.round_wind"]').forEach(bindRow);
+      // Static chip rows already in HTML
+      document.querySelectorAll(
+        '[data-pick="riichi.win_type"],[data-pick="riichi.players"],[data-pick="riichi.seat"],' +
+        '[data-pick="riichi.seat_wind"],[data-pick="riichi.round_wind"]'
+      ).forEach(bindRow);
+      // Default to 4 players (yonma)
+      state.riichi.players = "4";
+      const p4 = document.querySelector('[data-pick="riichi.players"] .chip[data-value="4"]');
+      if (p4) p4.classList.add("selected");
       // Dora auto
       fillRow('[data-pick="riichi.dora_auto"]', [...Array(11)].map((_,i) => [String(i), String(i)]));
       // Manual subform
@@ -431,11 +439,6 @@
         const show = state.yao.scope === "one";
         document.getElementById("yao-target-section").style.display = show ? "block" : "none";
         if (!show) delete state.yao.target;
-      }
-      if (action === "riichi" && field === "win_type") {
-        const show = state.riichi.win_type === "ron";
-        document.getElementById("riichi-discarder-section").style.display = show ? "block" : "none";
-        if (!show) delete state.riichi.discarder;
       }
       if (action === "riichi" && field === "han") {
         document.getElementById("riichi-fu-section").style.display =
@@ -656,14 +659,13 @@
           if (s.scope === "one") return s.target && s.target !== s.biter;
           return true;
         case "riichi":
-          if (!s.winner || !s.dealer || !s.win_type) return false;
-          if (s.win_type === "ron" && (!s.discarder || s.discarder === s.winner)) return false;
+          if (!s.win_type || !s.players) return false;
           if (riichiMode === "auto") {
             if (!s.seat_wind || !s.round_wind) return false;
             if (totalTiles() !== 14 || !winTile) return false;
             return true;
           } else {
-            if (!s.han) return false;
+            if (!s.seat || !s.han) return false;
             if (parseInt(s.han) < 5 && !s.fu) return false;
             return true;
           }
@@ -691,14 +693,12 @@
         const s = state.riichi;
         const base = {
           action: "riichi",
-          winner: s.winner,
-          dealer: s.dealer,
           tsumo: s.win_type === "tsumo",
-          discarder: s.win_type === "ron" ? s.discarder : null,
+          players: parseInt(s.players || "4"),
           honba: parseInt(s.honba || "0"),
         };
         if (riichiMode === "auto") {
-          // Build tile list from counts
+          // Build tile list from counts; dealer is implied by the seat wind.
           const tiles = [];
           ALL_TILES.forEach(code => {
             for (let i = 0; i < (tileCounts[code]||0); i++) tiles.push(code);
@@ -718,6 +718,7 @@
           });
         } else {
           payload = Object.assign(base, {
+            dealer: s.seat === "dealer",
             han: parseInt(s.han),
             fu: s.fu ? parseInt(s.fu) : 30,
             dora: parseInt(s.dora || "0"),

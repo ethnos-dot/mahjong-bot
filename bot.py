@@ -10,7 +10,6 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 from engine.riichi.analyze import CalledMeld, WinContext, analyze as riichi_analyze
 from engine.riichi.scoring import score as riichi_score
 from engine.sg.payout import (
-    Transfer,
     fan_to_value,
     settle_discard_win,
     settle_gang,
@@ -74,8 +73,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "Commands:\n"
         "/newgame Alice, Bob, Carol, Dave - start a SG session (4 players)\n"
         "   optional values: /newgame Alice, Bob, Carol, Dave | tai 0.1 yao 0.2 gang 0.2\n"
-        "/newriichi Alice, Bob, Carol, Dave - riichi payout calculator (3 or 4 players, no tracking)\n"
-        "/play - open the input form (SG action menu / riichi win entry)\n"
+        "/newriichi - open the riichi payout calculator (pure hand calc, no players/tracking)\n"
+        "/play - reopen the input form (SG action menu / riichi calculator)\n"
         "/balances - show current running balances\n"
         "/log - show the chronological action log\n"
         "/endgame - end the session\n"
@@ -111,19 +110,23 @@ async def newgame(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def newriichi(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    raw = update.message.text.partition(" ")[2]
-    players = [p.strip() for p in raw.split(",") if p.strip()]
-    if len(players) not in (3, 4):
+    if not WEBAPP_URL:
         await update.message.reply_text(
-            "Usage: /newriichi Alice, Bob, Carol, Dave (3 players for sanma, 4 for yonma)"
+            "WEBAPP_URL is not set yet. Add it to .env once the Mini App is hosted."
         )
         return
-
-    start_session(update.effective_chat.id, players, game_type="riichi")
+    # Pure calculator - no roster/players needed. Mark the chat as riichi so
+    # /play reopens the calculator too.
+    start_session(update.effective_chat.id, [], game_type="riichi")
+    keyboard = InlineKeyboardMarkup(
+        [[InlineKeyboardButton(
+            text="🀄 Open Riichi Calculator",
+            web_app=WebAppInfo(url=f"{WEBAPP_URL}?type=riichi"),
+        )]]
+    )
     await update.message.reply_text(
-        f"Riichi payout calculator ready ({len(players)} players): {', '.join(players)}\n"
-        "No running balances are tracked - each win just shows its payout.\n"
-        "Use /play to calculate a win (tiles or han + fu)."
+        "Riichi payout calculator (pure hand calc - nothing tracked):",
+        reply_markup=keyboard,
     )
 
 
@@ -139,9 +142,12 @@ async def play(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("No active session. Start one with /newgame first.")
         return
 
-    type_param = "&type=riichi" if session.game_type == "riichi" else ""
-    url = f"{WEBAPP_URL}?players={quote(','.join(session.players))}{type_param}"
-    label = "🀄 Open Win Entry" if session.game_type == "riichi" else "🀄 Open Action Menu"
+    if session.game_type == "riichi":
+        url = f"{WEBAPP_URL}?type=riichi"
+        label = "🀄 Open Riichi Calculator"
+    else:
+        url = f"{WEBAPP_URL}?players={quote(','.join(session.players))}"
+        label = "🀄 Open Action Menu"
     keyboard = InlineKeyboardMarkup(
         [[InlineKeyboardButton(text=label, web_app=WebAppInfo(url=url))]]
     )
@@ -233,90 +239,83 @@ def _build_action(session, data: dict):
     raise ValueError(f"unknown action: {action!r}")
 
 
-def _build_riichi(session, data: dict):
-    """Settle a riichi win.  Two paths:
-    - Auto: payload has 'tiles' (list of tile codes) + optional 'called' melds
-      => calls the analyzer to detect yaku/fu automatically.
-    - Manual: payload has 'han' + 'fu' => uses them directly.
-    Both paths share the same transfer-building logic.
+def _calc_riichi(data: dict) -> str:
+    """Pure hand calculator: given the hand + conditions, return a formatted
+    result (point value + role-based payment breakdown). No players, no
+    transfers - nothing is tracked.
+
+    Two input paths:
+    - Auto: payload has 'tiles' (+ optional 'called') => analyzer detects
+      yaku/fu; dealer is implied by the winner's seat wind (East = dealer).
+    - Manual: payload has 'han' + 'fu' + a 'dealer' boolean.
     """
-    winner = data["winner"]
-    dealer = data["dealer"]
     tsumo = bool(data["tsumo"])
-    discarder = data.get("discarder")
     honba = int(data.get("honba", 0))
-    players = session.players
-    is_dealer = winner == dealer
+    players = int(data.get("players", 4))
+    if players not in (3, 4):
+        players = 4
 
     if "tiles" in data:
-        # --- auto path: analyze from tile codes ---
-        seat_wind = data.get("seat_wind", "SW")   # winner's seat wind
+        seat_wind = data.get("seat_wind", "SW")   # East => dealer
         round_wind = data.get("round_wind", "EW")
-        win_tile = data["win_tile"]
-        # The analyzer scores dealer-ness from the seat wind (East = dealer),
-        # but payouts are routed by the dealer field; they must agree or the
-        # settlement won't balance.
-        if (seat_wind == "EW") != is_dealer:
-            raise ValueError(
-                "winner's seat wind must be East iff the winner is the dealer"
-            )
+        last_tile = bool(data.get("haitei"))
         ctx = WinContext(
             seat_wind=seat_wind,
             round_wind=round_wind,
-            win_tile=win_tile,
+            win_tile=data["win_tile"],
             tsumo=tsumo,
             riichi=bool(data.get("riichi", False)),
             double_riichi=bool(data.get("double_riichi", False)),
             ippatsu=bool(data.get("ippatsu", False)),
+            haitei=last_tile and tsumo,
+            houtei=last_tile and not tsumo,
+            rinshan=bool(data.get("rinshan", False)),
+            chankan=bool(data.get("chankan", False)),
             dora=int(data.get("dora", 0)),
             aka=int(data.get("aka", 0)),
-            players=len(players),
+            players=players,
             honba=honba,
         )
-        called_raw = data.get("called", [])
         called = [CalledMeld(m["kind"], tuple(m["codes"]), m.get("concealed", False))
-                  for m in called_raw]
+                  for m in data.get("called", [])]
         result = riichi_analyze(data["tiles"], called, ctx)
         if not result.ok:
             raise ValueError(f"invalid hand: {result.error}")
         s = result.score
         han, fu = result.han, result.fu
-        yaku_str = ", ".join(
-            (n if h == 0 else f"{n} {h}han") for n, h in result.yaku
-        )
+        dealer = seat_wind == "EW"
         if result.yakuman:
             yaku_str = " + ".join(result.yakuman)
-        auto_note = f"\nYaku: {yaku_str}"
+        else:
+            yaku_str = ", ".join((n if h == 0 else f"{n} {h}han") for n, h in result.yaku)
+        head = f"{yaku_str}\n" if yaku_str else ""
     else:
-        # --- manual path: user supplied han + fu ---
+        dealer = bool(data.get("dealer", False))
         riichi_han = 1 if data.get("riichi") else 0
         han = int(data["han"]) + int(data.get("dora", 0)) + riichi_han
         fu = int(data.get("fu", 30))
-        s = riichi_score(han, fu, dealer=is_dealer, tsumo=tsumo,
-                         players=len(players), honba=honba)
-        auto_note = "  (riichi +1)" if riichi_han else ""
+        s = riichi_score(han, fu, dealer=dealer, tsumo=tsumo, players=players, honba=honba)
+        head = ""
 
-    transfers: list[Transfer] = []
-    if not tsumo:
-        if not discarder or discarder == winner:
-            raise ValueError("ron needs a discarder who isn't the winner")
-        transfers.append(Transfer(payer=discarder, payee=winner, amount=s.payments[0].amount))
-        win_desc = f"ron off {discarder}"
-    else:
-        others = [p for p in players if p != winner and p != dealer]
-        for p in s.payments:
-            if p.role == "dealer":
-                transfers.append(Transfer(payer=dealer, payee=winner, amount=p.amount))
-            else:  # non-dealer payers: everyone except winner and dealer
-                for pl in others:
-                    transfers.append(Transfer(payer=pl, payee=winner, amount=p.amount))
-        win_desc = "tsumo"
+    # Role-based breakdown (no player names).
+    lines = []
+    for p in s.payments:
+        if p.role == "discarder":
+            lines.append(f"  Discarder pays {p.amount:,}")
+        elif p.role == "dealer":
+            lines.append(f"  Dealer pays {p.amount:,}")
+        else:
+            n = p.count
+            verb = "pays" if n == 1 else "pay"
+            each = " each" if n > 1 else ""
+            lines.append(f"  {n} non-dealer{'s' if n > 1 else ''} {verb} {p.amount:,}{each}")
 
+    seat = "dealer" if dealer else "non-dealer"
+    win = "tsumo" if tsumo else "ron"
     limit = f" {s.limit}" if s.limit else ""
-    fu_note = f" {fu}fu" if han > 0 and han < 5 else ""
-    summary = (f"Riichi: {winner} {win_desc} - {han} han{fu_note}{limit} "
-               f"({s.from_payments:,} pts){auto_note}")
-    return summary, transfers
+    fu_note = f" {fu}fu" if 0 < han < 5 else ""
+    header = f"{seat} {win} — {han} han{fu_note}{limit} = {s.from_payments:,} total"
+    return head + header + "\n" + "\n".join(lines)
 
 
 async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -326,24 +325,22 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     data = json.loads(update.effective_message.web_app_data.data)
-    try:
-        if data.get("action") == "riichi":
-            summary, transfers = _build_riichi(session, data)
-        else:
-            summary, transfers = _build_action(session, data)
-    except (KeyError, ValueError) as e:
-        await update.message.reply_text(f"Invalid action: {e}")
-        return
-
     actioner = _actioner_name(update)
 
-    if session.game_type == "riichi":
-        # Calculator only - show the payout for this hand, track nothing.
-        await update.message.reply_text(
-            f"🀄 {summary}\n"
-            f"(entered by {actioner})\n\n"
-            f"Payout:\n{_fmt_transfers(session, transfers)}"
-        )
+    # Riichi is a pure hand calculator: compute & show, track nothing.
+    if data.get("action") == "riichi":
+        try:
+            body = _calc_riichi(data)
+        except (KeyError, ValueError) as e:
+            await update.message.reply_text(f"Invalid hand: {e}")
+            return
+        await update.message.reply_text(f"🀄 Riichi calc\n{body}\n\n(by {actioner})")
+        return
+
+    try:
+        summary, transfers = _build_action(session, data)
+    except (KeyError, ValueError) as e:
+        await update.message.reply_text(f"Invalid action: {e}")
         return
 
     session.record(actioner, summary, transfers)
