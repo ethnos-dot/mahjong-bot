@@ -7,7 +7,10 @@ interface TelegramWebApp {
   ready: () => void;
   expand: () => void;
   initData: string;
-  initDataUnsafe?: { user?: { id: number; first_name?: string; username?: string } };
+  initDataUnsafe?: {
+    user?: { id: number; first_name?: string; username?: string };
+    start_param?: string;
+  };
   colorScheme?: "light" | "dark";
   themeParams?: Record<string, string>;
   setHeaderColor?: (c: string) => void;

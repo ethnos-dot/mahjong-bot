@@ -29,6 +29,10 @@ jobs:
         env:
           # Project Pages serve under /<repo>; basePath must match.
           NEXT_PUBLIC_BASE_PATH: /mahjong-bot
+          # Group-sync backend (Supabase track function URL) + bot deep link.
+          # Set these as repo variables: Settings -> Secrets and variables -> Actions -> Variables.
+          NEXT_PUBLIC_TRACK_URL: ${{ vars.TRACK_URL }}
+          NEXT_PUBLIC_BOT_APP_LINK: ${{ vars.BOT_APP_LINK }}
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
