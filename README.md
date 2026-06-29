@@ -1,37 +1,50 @@
-# Mahjong Bot
+# mahjong-web
 
-A Telegram bot for playing Mahjong, built with [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot).
+A Telegram Mini App for mahjong payouts, built as a **client-side web app** so it
+works from *any* launch method — menu button, the Main Mini App (`/newapp`),
+direct link, or in groups. Nothing depends on `sendData` (which only works from
+a reply-keyboard button).
 
-## Setup
+## Why this architecture
 
-1. Create a virtual environment and install dependencies:
-   ```
-   python -m venv venv
-   venv\Scripts\activate
-   pip install -r requirements.txt
-   ```
-2. Create a `.env` file with your bot token and Mini App URL:
-   ```
-   TELEGRAM_BOT_TOKEN=your-token-here
-   WEBAPP_URL=https://your-deployed-app-url/
-   ```
-3. Run the bot:
-   ```
-   python bot.py
-   ```
+The earlier version was a static page that sent the hand to the bot via
+`Telegram.WebApp.sendData`, and the bot replied. But `sendData` only works when
+the Mini App is launched from a **reply-keyboard button** — not inline buttons,
+the menu button, or the Main Mini App. So that approach can't be opened
+standalone or in groups.
 
-## Mini App (docs/)
+Here the scoring engine is ported to **TypeScript and runs in the browser**, so
+the app computes and shows the result itself. No round-trip to the bot is needed
+for a calculator. (A shared, multi-player tracker like Singaporean mode will add
+a backend that validates `initData` — the standard Mini App pattern — but the
+calculator needs none of that.)
 
-`docs/index.html` is the page Telegram opens inside the app when a user taps the "Play Mahjong" button. It's served via GitHub Pages (Settings → Pages → Deploy from branch `main`, folder `/docs`). It must be HTTPS — `localhost` and plain HTTP won't work.
+## Stack
 
-Once deployed, set `WEBAPP_URL` in `.env` to that page's URL.
+- **Next.js 15** (App Router) + **React 19** + TypeScript, `output: "export"`
+  (static) so it deploys to GitHub Pages or any static host.
+- Telegram WebApp SDK loaded in `app/layout.tsx`; `lib/telegram.ts` exposes a
+  `useTelegram()` hook (theme, `initData`, user). Works in a plain browser too.
 
-## Enabling group use + Mini App in BotFather
+## Layout
 
-1. Message [@BotFather](https://t.me/BotFather) → `/mybots` → select your bot.
-2. **Bot Settings → Group Privacy** → turn **off** if you want the bot to see all group messages (not required just for commands/buttons).
-3. **Bot Settings → Allow Groups?** → make sure it's enabled so the bot can be added to groups.
-4. **Bot Settings → Menu Button** → set a Web App URL (your `WEBAPP_URL`) so a persistent "launch" button appears next to the message box. This also works inside groups.
-5. (Optional) `/newapp` lets you register a full Mini App with its own name/icon, separate from the menu button.
+- `lib/riichi/` — scoring engine ported from the Python `engine/riichi`
+  (`scoring.ts`, `yaku.ts`).
+- `components/RiichiCalculator.tsx` — riichi calculator (Han+Fu or pick-yaku),
+  role-based payout, fully client-side.
+- `components/GamePicker.tsx` — landing menu (Singaporean / Riichi).
+- `app/page.tsx` — resolves `?type=` or shows the picker.
 
-Once configured, add the bot to a group as normal, and use `/play` (or the menu button) to launch the Mini App from there.
+## Run / build
+
+```
+npm install
+npm run dev      # http://localhost:3000  (use ?type=riichi to skip the picker)
+npm run build    # static export to ./out
+```
+
+## Status
+
+- Riichi calculator: done (manual + yaku-checklist, client-side).
+- TODO: port the riichi from-tiles analyzer; port Singaporean (engine + a
+  backend with `initData` validation for shared group balances); deploy.

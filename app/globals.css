@@ -1,0 +1,259 @@
+:root {
+  color-scheme: light dark;
+  --bg: var(--tg-theme-bg-color, #ffffff);
+  --text: var(--tg-theme-text-color, #111111);
+  --hint: var(--tg-theme-hint-color, #888888);
+  --secondary-bg: var(--tg-theme-secondary-bg-color, #f1f1f4);
+  --button: var(--tg-theme-button-color, #2ea6ff);
+  --button-text: var(--tg-theme-button-text-color, #ffffff);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  padding: 14px 14px 96px;
+  -webkit-tap-highlight-color: transparent;
+}
+
+h1 {
+  font-size: 1.15rem;
+  margin: 0 0 16px;
+}
+
+h2 {
+  font-size: 0.78rem;
+  margin: 18px 0 7px;
+  color: var(--hint);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+small {
+  color: var(--hint);
+  font-weight: 400;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.chip {
+  border: 1px solid var(--hint);
+  border-radius: 9px;
+  padding: 9px 12px;
+  font-size: 0.9rem;
+  background: var(--secondary-bg);
+  color: inherit;
+  cursor: pointer;
+  user-select: none;
+}
+
+.chip.selected,
+.chip.on {
+  background: var(--button);
+  color: var(--button-text);
+  border-color: transparent;
+}
+
+/* Big choice buttons (game picker) */
+.choices {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+.choice-btn {
+  padding: 22px 12px;
+  border: 1px solid var(--hint);
+  border-radius: 14px;
+  background: var(--secondary-bg);
+  color: inherit;
+  font-size: 1.05rem;
+  font-weight: 600;
+  text-align: center;
+  cursor: pointer;
+  line-height: 1.5;
+}
+
+.choice-btn small {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 400;
+}
+
+/* Primary action button, fixed to the bottom */
+.primary-btn {
+  position: fixed;
+  bottom: 16px;
+  left: 14px;
+  right: 14px;
+  padding: 15px;
+  border: none;
+  border-radius: 11px;
+  background: var(--button);
+  color: var(--button-text);
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.primary-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.link-btn {
+  background: none;
+  border: none;
+  color: var(--button);
+  font-size: 0.85rem;
+  cursor: pointer;
+  padding: 0;
+  margin-top: 14px;
+}
+
+/* Text inputs */
+.text-input {
+  display: block;
+  width: 100%;
+  padding: 10px 12px;
+  margin-bottom: 7px;
+  border: 1px solid var(--hint);
+  border-radius: 9px;
+  background: var(--secondary-bg);
+  color: inherit;
+  font-size: 0.95rem;
+}
+
+.text-input.small {
+  width: 72px;
+}
+
+.vlabel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.78rem;
+  color: var(--hint);
+}
+
+.vlabel .text-input {
+  margin-bottom: 0;
+}
+
+/* Balances + log */
+.balances {
+  border-radius: 12px;
+  background: var(--secondary-bg);
+  padding: 6px 12px;
+}
+
+.bal-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 0;
+  font-size: 0.95rem;
+}
+
+.bal {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.bal.pos {
+  color: #1f9d55;
+}
+
+.bal.neg {
+  color: #e54848;
+}
+
+.log {
+  font-size: 0.85rem;
+  color: var(--hint);
+  line-height: 1.7;
+}
+
+/* Tile picker */
+.tiles-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 5px;
+}
+
+.tile-btn {
+  position: relative;
+  min-width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--hint);
+  border-radius: 7px;
+  background: var(--secondary-bg);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+}
+
+.tile-btn.has {
+  background: var(--button);
+  color: var(--button-text);
+  border-color: transparent;
+}
+
+.tile-badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 3px;
+  border-radius: 8px;
+  background: #e54848;
+  color: #fff;
+  font-size: 0.65rem;
+  line-height: 16px;
+  text-align: center;
+}
+
+/* Result card */
+.result {
+  margin-top: 22px;
+  border-radius: 14px;
+  padding: 18px;
+  background: var(--secondary-bg);
+}
+
+.result .total {
+  font-size: 2rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.result .limit {
+  color: var(--button);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.result .line {
+  margin-top: 6px;
+  font-size: 0.95rem;
+}
+
+.result .yaku {
+  margin-top: 8px;
+  font-size: 0.85rem;
+  color: var(--hint);
+}
