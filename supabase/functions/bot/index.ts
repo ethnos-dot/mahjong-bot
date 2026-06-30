@@ -18,12 +18,9 @@
 // Secrets needed: BOT_TOKEN (already set), WEBHOOK_SECRET (any random string).
 // (SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY are injected automatically.)
 
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
 const BOT_TOKEN = Deno.env.get("BOT_TOKEN") || "";
 const WEBHOOK_SECRET = Deno.env.get("WEBHOOK_SECRET") || "";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
 // Where the Mini App lives + its /newapp short name. Tap-to-open deep links are
 // `${APP_LINK}?startapp=<code>`.
@@ -43,52 +40,19 @@ async function tg(method: string, payload: unknown) {
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-const randomCode = (n = 6) => {
-  const alpha = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // no ambiguous chars
-  const bytes = crypto.getRandomValues(new Uint8Array(n));
-  return [...bytes].map((b) => alpha[b % alpha.length]).join("");
-};
-
-function sb() {
-  return createClient(SUPABASE_URL, SERVICE_KEY);
-}
-
-// Find (or create) this Telegram group's mahjong group stub; return its code.
-async function ensureGroupCode(chatId: number, title: string): Promise<string> {
-  const db = sb();
-  const { data: existing } = await db.from("trackers").select("code").eq("tg_chat_id", chatId).maybeSingle();
-  if (existing?.code) return existing.code;
-
-  // New group: insert a blank stub (players=[] => Mini App shows "Create New Group").
-  for (let i = 0; i < 4; i++) {
-    const code = randomCode();
-    const { error } = await db.from("trackers").insert({
-      code,
-      name: title || "Mahjong",
-      players: [],
-      tg_chat_id: chatId,
-      game: "sg",
-    });
-    if (!error) return code;
-    if (error.code !== "23505") throw error; // 23505 = unique collision -> retry
-    // A concurrent insert may have created it; re-read.
-    const { data } = await db.from("trackers").select("code").eq("tg_chat_id", chatId).maybeSingle();
-    if (data?.code) return data.code;
-  }
-  throw new Error("could not allocate group code");
-}
-
-function openButton(code?: string) {
-  const url = code ? `${APP_LINK}?startapp=${code}` : APP_LINK;
+function openButton(param?: string) {
+  const url = param ? `${APP_LINK}?startapp=${param}` : APP_LINK;
   return { inline_keyboard: [[{ text: "Open Mahjong", url }]] };
 }
 
-async function replyOpen(chatId: number, title: string, isGroup: boolean) {
-  const code = isGroup ? await ensureGroupCode(chatId, title) : undefined;
+async function replyOpen(chatId: number, isGroup: boolean) {
+  // In a group, the deep link carries the group's id (g<chatId>) so the app
+  // opens this group's home — its groups + create/join. In private, no param.
+  const param = isGroup ? `g${chatId}` : undefined;
   const text = isGroup
-    ? "Tap below to open this group's mahjong tracker. Everyone here shares the same balances."
+    ? "Tap below to open Mahjong for this group — see its groups, or create a new one."
     : "Tap below to open Mahjong.";
-  await tg("sendMessage", { chat_id: chatId, text, reply_markup: openButton(code) });
+  await tg("sendMessage", { chat_id: chatId, text, reply_markup: openButton(param) });
 }
 
 const HELP = [
@@ -113,7 +77,7 @@ async function handleUpdate(u: Record<string, unknown>) {
     const chat = mcm.chat as { id: number; title?: string; type: string };
     const status = (mcm.new_chat_member as { status?: string })?.status;
     if ((chat.type === "group" || chat.type === "supergroup") && (status === "member" || status === "administrator")) {
-      await replyOpen(chat.id, chat.title || "Mahjong", true);
+      await replyOpen(chat.id, true);
     }
     return;
   }
@@ -129,7 +93,7 @@ async function handleUpdate(u: Record<string, unknown>) {
   const isGroup = chat.type === "group" || chat.type === "supergroup";
 
   if (cmd === "/start" || cmd === "/open" || cmd === "/mahjong") {
-    await replyOpen(chat.id, chat.title || "Mahjong", isGroup);
+    await replyOpen(chat.id, isGroup);
   } else if (cmd === "/help") {
     await tg("sendMessage", { chat_id: chat.id, text: HELP });
   }

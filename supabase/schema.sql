@@ -12,13 +12,16 @@ create table if not exists trackers (
   name        text not null default '',
   players     jsonb not null default '[]',           -- ["Alice","Bob",...]; [] = stub, not set up yet
   bases       jsonb not null default '{"tai":0.1,"yao":0.2,"gang":0.2}',
-  tg_chat_id  bigint unique,                         -- bound Telegram group (null = app-made "your own" group)
+  tg_chat_id  bigint,                                -- owning Telegram group (null = app-made group); NOT unique: a chat can own several groups
   created_at  timestamptz not null default now()
 );
 
--- If the table already exists from the first version, add the new column:
-alter table trackers add column if not exists tg_chat_id bigint unique;
--- Relax the not-null defaults so the bot can create empty stubs:
+-- Migrations for upgrading an existing table:
+alter table trackers add column if not exists tg_chat_id bigint;
+-- A Telegram chat may own multiple groups, so drop the old unique constraint:
+alter table trackers drop constraint if exists trackers_tg_chat_id_key;
+create index if not exists trackers_tg_chat_idx on trackers (tg_chat_id);
+-- Relax the not-null defaults (older stub-based flow):
 alter table trackers alter column name set default '';
 alter table trackers alter column name drop not null;
 alter table trackers alter column players set default '[]';

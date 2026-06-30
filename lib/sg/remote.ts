@@ -48,8 +48,20 @@ async function call<T>(op: string, payload: Record<string, unknown>): Promise<T>
   return data as T;
 }
 
-export const createTracker = (name: string, players: string[], bases: Tracker["bases"]) =>
-  call<TrackerState>("create", { name, players, bases });
+export interface GroupSummary {
+  code: string;
+  name: string;
+  players: number;
+}
+
+/** Create a group. If `tgChatId` is set (launched from a Telegram group), the
+ *  group is bound to it and the bot posts a join button into that chat. */
+export const createTracker = (name: string, players: string[], bases: Tracker["bases"], tgChatId?: number) =>
+  call<TrackerState>("create", { name, players, bases, tgChatId });
+
+/** Groups bound to a Telegram group (so members can see + join them). */
+export const listByChat = (tgChatId: number) =>
+  call<{ groups: GroupSummary[] }>("list-by-chat", { tgChatId });
 
 /** Fill in a bot-created group stub (code already exists, players still empty). */
 export const setupGroup = (code: string, name: string, players: string[], bases: Tracker["bases"]) =>
@@ -60,12 +72,37 @@ export const getState = (code: string) => call<TrackerState>("state", { code });
 export const addRemoteAction = (code: string, summary: string, transfers: Transfer[]) =>
   call<TrackerState>("action", { code, summary, transfers });
 
-/** The winning-tile / join deep-link param Telegram passes when opened via
- *  t.me/<bot>/<app>?startapp=<code>. */
-export function startParamCode(): string | null {
-  if (typeof window === "undefined") return null;
-  const sp = window.Telegram?.WebApp?.initDataUnsafe?.start_param;
-  return sp ? String(sp).toUpperCase() : null;
+/** Parse the launch deep-link param Telegram passes via ?startapp=<x>:
+ *  - `g<chatId>` (lowercase g) → opened from a Telegram group; returns its id.
+ *  - a 6-char code → a direct group-join link.
+ *  - nothing → opened from a private chat / menu button. */
+export function parseStartParam(): { tgChatId?: number; code?: string } {
+  if (typeof window === "undefined") return {};
+  const raw = window.Telegram?.WebApp?.initDataUnsafe?.start_param;
+  if (!raw) return {};
+  if (/^g-?\d+$/.test(raw)) return { tgChatId: parseInt(raw.slice(1), 10) };
+  return { code: String(raw).toUpperCase() };
+}
+
+// "Your groups" — remembered per device so they appear on the home screen.
+const LS_GROUPS = "mahjong-groups";
+export function localGroups(): GroupSummary[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const v = JSON.parse(localStorage.getItem(LS_GROUPS) || "[]");
+    return Array.isArray(v) ? v : [];
+  } catch {
+    return [];
+  }
+}
+export function rememberGroup(g: GroupSummary): void {
+  if (typeof window === "undefined") return;
+  const list = [g, ...localGroups().filter((x) => x.code !== g.code)].slice(0, 50);
+  localStorage.setItem(LS_GROUPS, JSON.stringify(list));
+}
+export function forgetGroup(code: string): void {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(LS_GROUPS, JSON.stringify(localGroups().filter((x) => x.code !== code)));
 }
 
 /** Bot username for building shareable deep links. Override via env if needed. */

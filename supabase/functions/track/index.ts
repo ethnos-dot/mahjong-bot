@@ -57,6 +57,28 @@ const randomCode = (n = 6) => {
   return [...bytes].map((b) => alpha[b % alpha.length]).join("");
 };
 
+const APP_LINK = "https://t.me/jpgmahjongbot/jpg";
+
+// Post a "tap to join" button into the Telegram group a new group is bound to.
+// Best-effort: failures (bot not in chat, etc.) never block group creation.
+async function announceGroup(chatId: number, name: string, by: string, code: string): Promise<void> {
+  const token = Deno.env.get("BOT_TOKEN");
+  if (!token || !chatId) return;
+  try {
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: `${by} started a mahjong group: "${name}". Tap to join — everyone sees the same balances.`,
+        reply_markup: { inline_keyboard: [[{ text: `Join ${name}`, url: `${APP_LINK}?startapp=${code}` }]] },
+      }),
+    });
+  } catch (_) {
+    /* ignore */
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   if (req.method !== "POST") return json({ error: "POST only" }, 405);
@@ -77,20 +99,42 @@ Deno.serve(async (req) => {
 
   try {
     if (op === "create") {
-      const { name, players, bases } = body as unknown as { name: string; players: string[]; bases: unknown };
+      const { name, players, bases, tgChatId } = body as unknown as {
+        name: string; players: string[]; bases: unknown; tgChatId?: number;
+      };
       if (!name || !Array.isArray(players) || players.length < 2) return json({ error: "name + >=2 players required" }, 400);
+      const chat = typeof tgChatId === "number" && Number.isFinite(tgChatId) ? tgChatId : null;
       let code = randomCode();
       for (let i = 0; i < 3; i++) {
         const { data, error } = await sb
           .from("trackers")
-          .insert({ code, name, players, bases })
+          .insert({ code, name, players, bases, tg_chat_id: chat })
           .select()
           .single();
-        if (!error) return json({ tracker: data, actions: [] });
-        if (error.code === "23505") code = randomCode(); // unique collision, retry
+        if (!error) {
+          if (chat) await announceGroup(chat, name, actioner, code); // invite the group
+          return json({ tracker: data, actions: [] });
+        }
+        if (error.code === "23505") code = randomCode(); // code collision, retry
         else throw error;
       }
       return json({ error: "could not allocate code" }, 500);
+    }
+
+    if (op === "list-by-chat") {
+      // Groups bound to a Telegram group, so members can see + join them.
+      const tgChatId = (body as unknown as { tgChatId?: number }).tgChatId;
+      if (typeof tgChatId !== "number" || !Number.isFinite(tgChatId)) return json({ groups: [] });
+      const { data, error } = await sb
+        .from("trackers")
+        .select("code,name,players")
+        .eq("tg_chat_id", tgChatId)
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      const groups = (data || [])
+        .filter((t) => Array.isArray(t.players) && t.players.length >= 2)
+        .map((t) => ({ code: t.code, name: t.name, players: (t.players as string[]).length }));
+      return json({ groups });
     }
 
     if (op === "setup-group") {

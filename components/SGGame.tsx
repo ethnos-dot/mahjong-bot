@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useLocalStorage } from "@/lib/useLocalStorage";
 import {
   Transfer,
   PayoutConfig,
@@ -16,11 +15,15 @@ import {
 } from "@/lib/sg/payout";
 import {
   syncEnabled,
-  startParamCode,
+  parseStartParam,
   createTracker,
+  listByChat,
   setupGroup,
   getState,
   addRemoteAction,
+  rememberGroup,
+  localGroups,
+  GroupSummary,
   BOT_APP_LINK,
   TrackerState,
 } from "@/lib/sg/remote";
@@ -35,149 +38,127 @@ function computeBalances(players: string[], log: { transfers: Transfer[] }[]): R
   return b;
 }
 
-// ---------------------------------------------------------------- router
+// ---------------------------------------------------------------- router / home
 
-export default function SGGame({ onBack }: { onBack: () => void }) {
-  const [view, setView] = useState<"choose" | "local" | "sync">("choose");
-  const [joinCode, setJoinCode] = useState<string | null>(null);
-  const [autoChecked, setAutoChecked] = useState(false);
+const sumOf = (s: TrackerState): GroupSummary => ({ code: s.tracker.code, name: s.tracker.name, players: s.tracker.players.length });
+function mergeGroups(local: GroupSummary[], remote: GroupSummary[]): GroupSummary[] {
+  const map = new Map<string, GroupSummary>();
+  for (const g of local) map.set(g.code, g);
+  for (const g of remote) map.set(g.code, g); // backend names/counts win
+  return [...map.values()];
+}
 
-  // Deep-link join: t.me/<bot>/<app>?startapp=<code>
+export default function SGGame({ onOpenRiichi }: { onOpenRiichi: () => void }) {
+  const [open, setOpen] = useState<TrackerState | null>(null);
+  const [view, setView] = useState<"home" | "create" | "join">("home");
+  const [tgChatId, setTgChatId] = useState<number | undefined>(undefined);
+  const [active, setActive] = useState<GroupSummary[]>([]);
+  const [booting, setBooting] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  // Resolve the launch. A direct group-code link opens that group; a tgroup
+  // token (g<chatId>) lands on the home listing that group's groups; otherwise
+  // the home with just this device's groups.
   useEffect(() => {
-    const c = startParamCode();
-    if (c) {
-      setJoinCode(c);
-      setView("sync");
+    setActive(localGroups());
+    const { tgChatId: cid, code } = parseStartParam();
+    if (code) {
+      setBusy(true);
+      getState(code)
+        .then((s) => { rememberGroup(sumOf(s)); setOpen(s); })
+        .catch((e) => setError(String((e as Error).message || e)))
+        .finally(() => { setBusy(false); setBooting(false); });
+      return;
     }
-    setAutoChecked(true);
+    if (cid !== undefined) {
+      setTgChatId(cid);
+      if (syncEnabled()) {
+        listByChat(cid)
+          .then((r) => setActive(mergeGroups(localGroups(), r.groups)))
+          .catch(() => {})
+          .finally(() => setBooting(false));
+        return;
+      }
+    }
+    setBooting(false);
   }, []);
 
-  if (!autoChecked) return null;
+  if (booting) return null;
 
-  if (view === "local") return <LocalGame onBack={() => setView("choose")} />;
-  if (view === "sync") return <SyncGame initialCode={joinCode} onBack={() => setView("choose")} />;
+  const goHome = () => { setOpen(null); setView("home"); setError(""); };
+  const openByCode = async (code: string) => {
+    setBusy(true); setError("");
+    try { const s = await getState(code); rememberGroup(sumOf(s)); setOpen(s); }
+    catch (e) { setError(String((e as Error).message || e)); }
+    finally { setBusy(false); }
+  };
 
-  return (
-    <div>
-      <h1>Singaporean</h1>
-      <h2>How do you want to track?</h2>
-      <div className="choices" style={{ gridTemplateColumns: "1fr" }}>
-        {syncEnabled() && (
-          <div className="choice-btn" onClick={() => { setJoinCode(null); setView("sync"); }}>
-            Synced group
-            <small>Everyone sees the same balances on their own phone</small>
-          </div>
-        )}
-        <div className="choice-btn" onClick={() => setView("local")}>
-          This device only
-          <small>Track on this phone, nothing shared</small>
-        </div>
-      </div>
-      <button className="link-btn" onClick={onBack}>← Back to menu</button>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------- local
-
-interface LocalState extends Bases {
-  players: string[];
-  log: LogEntry[];
-}
-
-function LocalGame({ onBack }: { onBack: () => void }) {
-  const [game, setGame, loaded] = useLocalStorage<LocalState | null>("mahjong-sg", null);
-  if (!loaded) return null;
-  if (!game)
+  if (open) {
+    if (open.tracker.players.length >= 2) return <SyncPlay initial={open} onBack={goHome} />;
+    // A bot-created stub from the old flow that was never set up.
     return (
       <Setup
-        title="Singaporean — this device"
-        onStart={(name, players, bases) => setGame({ players, ...bases, log: [] })}
-        onBack={onBack}
-      />
-    );
-  const bases: Bases = game;
-  const balances = computeBalances(game.players, game.log);
-  return (
-    <Dashboard
-      players={game.players}
-      bases={bases}
-      balances={balances}
-      log={game.log}
-      onRecord={(summary, transfers) => setGame({ ...game, log: [...game.log, { summary, transfers }] })}
-      onEnd={() => { if (confirm("End game and clear balances?")) setGame(null as unknown as LocalState); }}
-      onBack={onBack}
-    />
-  );
-}
-
-// ---------------------------------------------------------------- synced
-
-function SyncGame({ initialCode, onBack }: { initialCode: string | null; onBack: () => void }) {
-  const [state, setState] = useState<TrackerState | null>(null);
-  const [mode, setMode] = useState<"pick" | "create" | "join">(initialCode ? "join" : "pick");
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  // Auto-join when arriving via a deep link.
-  useEffect(() => {
-    if (initialCode && !state) {
-      setBusy(true);
-      getState(initialCode)
-        .then(setState)
-        .catch((e) => setError(String(e.message || e)))
-        .finally(() => setBusy(false));
-    }
-  }, [initialCode]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  if (state) {
-    // Configured group/tracker -> straight to the dashboard.
-    if (state.tracker.players.length >= 2) return <SyncPlay initial={state} onBack={onBack} />;
-    // Bot-created group stub nobody has set up yet -> Create New Group.
-    return (
-      <Setup
-        title="Create New Group"
-        startLabel="Create group"
+        title="Create New Group" startLabel="Create group"
         onStart={async (name, players, bases) => {
           setBusy(true); setError("");
-          try { setState(await setupGroup(state.tracker.code, name, players, bases)); }
+          try { const s = await setupGroup(open.tracker.code, name, players, bases); rememberGroup(sumOf(s)); setOpen(s); }
           catch (e) { setError(String((e as Error).message || e)); }
           finally { setBusy(false); }
         }}
-        onBack={onBack}
-        busy={busy}
-        error={error}
+        onBack={goHome} busy={busy} error={error}
       />
     );
   }
 
-  if (mode === "create")
+  if (view === "create")
     return (
       <Setup
-        title="Synced tracker — new"
+        title="Create a new group" startLabel="Create group"
+        note={tgChatId !== undefined
+          ? "When you create it, I'll post a join button in your Telegram group so everyone can tap to join."
+          : undefined}
         onStart={async (name, players, bases) => {
           setBusy(true); setError("");
-          try { setState(await createTracker(name, players, bases)); }
+          try { const s = await createTracker(name, players, bases, tgChatId); rememberGroup(sumOf(s)); setOpen(s); }
           catch (e) { setError(String((e as Error).message || e)); }
           finally { setBusy(false); }
         }}
-        onBack={() => setMode("pick")}
-        busy={busy}
-        error={error}
+        onBack={() => { setView("home"); setError(""); }} busy={busy} error={error}
       />
     );
 
-  if (mode === "join") return <JoinForm initialCode={initialCode} busy={busy} onBack={() => setMode("pick")} onJoined={setState} />;
+  if (view === "join")
+    return <JoinForm initialCode={null} busy={busy} onBack={() => { setView("home"); setError(""); }}
+      onJoined={(s) => { rememberGroup(sumOf(s)); setOpen(s); }} />;
 
+  // HOME
   return (
     <div>
-      <h1>Synced tracker</h1>
-      <div className="choices" style={{ gridTemplateColumns: "1fr" }}>
-        <div className="choice-btn" onClick={() => setMode("create")}>Create a tracker<small>Set players + values, get a share link</small></div>
-        <div className="choice-btn" onClick={() => setMode("join")}>Join with a code<small>Enter a code someone shared</small></div>
-      </div>
+      <h1>Mahjong</h1>
+      {!syncEnabled() && <p style={{ color: "#e54848", fontSize: "0.85rem" }}>Open this inside Telegram to use shared groups.</p>}
       {error && <p style={{ color: "#e54848" }}>{error}</p>}
-      <button className="link-btn" onClick={onBack}>← Back</button>
+
+      <h2>Your groups</h2>
+      {active.length === 0 ? (
+        <p style={{ opacity: 0.7, fontSize: "0.9rem" }}>No groups yet — create one or join with a code.</p>
+      ) : (
+        <div className="balances">
+          {active.map((g) => (
+            <div key={g.code} className="bal-row" style={{ cursor: "pointer" }} onClick={() => openByCode(g.code)}>
+              <span>{g.name || g.code}</span>
+              <span style={{ opacity: 0.55, fontSize: "0.8rem" }}>{g.code}{g.players ? ` · ${g.players}p` : ""}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="choices" style={{ marginTop: 14 }}>
+        <div className="choice-btn" onClick={() => setView("create")}>Create a new group<small>Set players + payouts</small></div>
+        <div className="choice-btn" onClick={() => setView("join")}>Join with a code<small>Enter a shared code</small></div>
+      </div>
+
+      <button className="link-btn" onClick={onOpenRiichi}>Riichi hand calculator →</button>
     </div>
   );
 }
@@ -272,6 +253,7 @@ function Setup({
   busy,
   error,
   startLabel,
+  note,
 }: {
   title: string;
   onStart: (name: string, players: string[], bases: Bases) => void;
@@ -279,6 +261,7 @@ function Setup({
   busy?: boolean;
   error?: string;
   startLabel?: string;
+  note?: string;
 }) {
   const [name, setName] = useState("");
   const [names, setNames] = useState(["", "", "", ""]);
@@ -358,6 +341,7 @@ function Setup({
   return (
     <div>
       <h1>{title}</h1>
+      {note && <p style={{ fontSize: "0.85rem", opacity: 0.75 }}>{note}</p>}
       <h2>Game name</h2>
       <input className="text-input" placeholder="e.g. Friday mahjong" value={name} onChange={(e) => setName(e.target.value)} />
       <h2>Players</h2>
