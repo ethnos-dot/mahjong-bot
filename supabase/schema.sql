@@ -66,16 +66,39 @@ create or replace function add_player(p_id uuid, p_name text) returns void
 revoke all on function add_player(uuid, text) from public, anon, authenticated;
 grant execute on function add_player(uuid, text) to service_role;
 
--- One global username per Telegram account, chosen on first use. Unique
--- (case-insensitively). Independent of the per-group seat names in `members`.
-create table if not exists profiles (
-  user_id    bigint primary key,                  -- Telegram account id (from validated initData)
-  username   text not null,
-  created_at timestamptz not null default now()
-);
--- Case-insensitive uniqueness via a functional index (no two "Bob"/"bob").
-create unique index if not exists profiles_username_lc_key on profiles (lower(username));
-alter table profiles enable row level security;   -- no policies: only the Edge Function (service role) touches it
+-- Identity is the Telegram account (members.user_id); there is no global
+-- username. A user's display name is their per-group SEAT (members.name),
+-- defaulted from their Telegram name at join and renamable in-group.
+-- (An earlier design had a unique global `profiles` table — dropped:)
+drop table if exists profiles;
+
+-- Rename the caller's seat within a group (the per-group display name).
+-- Atomically rewrites: members.name (the seat), trackers.players (the roster
+-- string), and every actions.transfers payer/payee — so historical balances
+-- stay attributed to the renamed player. actions.summary keeps its original
+-- text as a historical record. Order is preserved. service_role only.
+create or replace function rename_player(p_id uuid, p_user bigint, p_old text, p_new text)
+  returns void language plpgsql security definer as $$
+begin
+  update members set name = p_new where tracker_id = p_id and user_id = p_user;
+  update trackers set players = coalesce((
+    select jsonb_agg(case when elem = to_jsonb(p_old) then to_jsonb(p_new) else elem end order by ord)
+    from jsonb_array_elements(players) with ordinality as t(elem, ord)
+  ), '[]'::jsonb) where id = p_id;
+  update actions set transfers = coalesce((
+    select jsonb_agg(
+      case
+        when (e->>'payer') = p_old and (e->>'payee') = p_old
+          then jsonb_set(jsonb_set(e, '{payer}', to_jsonb(p_new)), '{payee}', to_jsonb(p_new))
+        when (e->>'payer') = p_old then jsonb_set(e, '{payer}', to_jsonb(p_new))
+        when (e->>'payee') = p_old then jsonb_set(e, '{payee}', to_jsonb(p_new))
+        else e
+      end order by ord)
+    from jsonb_array_elements(transfers) with ordinality as t(e, ord)
+  ), '[]'::jsonb) where tracker_id = p_id;
+end $$;
+revoke all on function rename_player(uuid, bigint, text, text) from public, anon, authenticated;
+grant execute on function rename_player(uuid, bigint, text, text) to service_role;
 
 alter table trackers enable row level security;
 alter table actions  enable row level security;

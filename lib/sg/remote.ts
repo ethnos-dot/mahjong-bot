@@ -56,17 +56,10 @@ export interface GroupSummary {
   players: number;
 }
 
-export interface Profile {
-  username: string;
-}
-
-/** This account's global username (null on first ever use) plus an available
- *  suggestion to pre-fill the "pick a username" screen. */
-export const getMe = () => call<{ profile: Profile | null; suggested: string }>("me", {});
-
-/** Claim a unique username (first-time setup). Throws "that username is taken"
- *  (409) if another account already has it. */
-export const setUsername = (username: string) => call<{ profile: Profile }>("set-username", { username });
+/** Rename your own seat in a group (your per-group display name). Rewrites the
+ *  roster + past transfers server-side so balances stay correct. Throws "that
+ *  name is taken in this group" (409) if another seat already uses it. */
+export const renameSeat = (code: string, name: string) => call<TrackerState>("rename-seat", { code, name });
 
 /** Create a group. If `tgChatId` is set (launched from a Telegram group), the
  *  group is bound to it and the bot posts a join button into that chat. */

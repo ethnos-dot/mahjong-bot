@@ -95,41 +95,6 @@ async function announceJoin(chatId: number, nickname: string): Promise<void> {
   }
 }
 
-// Usernames: 3-20 chars, letters/digits/underscore. Stored as typed, unique
-// case-insensitively (functional index on lower(username)).
-const USERNAME_RE = /^[A-Za-z0-9_]{3,20}$/;
-
-// Strip a Telegram name down to a valid handle fragment ([a-z0-9_]). Folds
-// accents first so "José"->"jose", "Müller"->"muller" instead of being lost.
-function handleFragment(s: unknown): string {
-  return String(s ?? "")
-    .normalize("NFKD").replace(/[\u0300-\u036f]/g, "") // drop combining diacritics
-    .toLowerCase().replace(/[^a-z0-9_]/g, "").slice(0, 15);
-}
-
-// Suggest an AVAILABLE username derived from the user's Telegram handle (or
-// first name), appending a number if the base is taken. Always returns a
-// suggestion that passed a uniqueness check at call time.
-async function suggestUsername(
-  sb: ReturnType<typeof createClient>,
-  user: Record<string, unknown>,
-): Promise<string> {
-  let base = handleFragment(user.username) || handleFragment(user.first_name);
-  // Empty/too-short (emoji-only, CJK, etc.): seed a random "playerNNNN" so these
-  // users spread across the keyspace instead of all colliding on player2/3/…
-  if (base.length < 3) base = `player${Math.floor(1000 + Math.random() * 9000)}`;
-  // Pull existing handles sharing this prefix (escape LIKE metachars in base).
-  const likeBase = base.replace(/[\\%_]/g, "\\$&");
-  const { data } = await sb.from("profiles").select("username").ilike("username", `${likeBase}%`);
-  const taken = new Set((data || []).map((r) => String((r as { username: string }).username).toLowerCase()));
-  if (!taken.has(base)) return base;
-  for (let i = 2; i < 1000; i++) {
-    const cand = `${base}${i}`;
-    if (!taken.has(cand)) return cand;
-  }
-  return `${base}${Math.floor(Math.random() * 1e6)}`;
-}
-
 // Which player seat each account has claimed in a group. Used to gate the
 // "Join Group" screen and greet the user by their seat.
 async function seatInfo(
@@ -165,35 +130,31 @@ Deno.serve(async (req) => {
   const sb = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
   try {
-    if (op === "me") {
-      // The account's global username (null on first ever use) + an available
-      // suggestion to pre-fill the "pick a username" screen.
-      if (!userId) return json({ profile: null, suggested: "" });
-      const { data: p } = await sb.from("profiles").select("username").eq("user_id", userId).maybeSingle();
-      const username = p ? (p as { username: string }).username : null;
-      const suggested = username ?? (await suggestUsername(sb, user as Record<string, unknown>));
-      return json({ profile: username ? { username } : null, suggested });
-    }
-
-    if (op === "set-username") {
-      // Claim a unique username (first-time setup). Create-once: if this account
-      // already has one, return it unchanged.
+    if (op === "rename-seat") {
+      // Rename the caller's own seat (their per-group display name). Atomically
+      // rewrites the roster + every transfer via rename_player so balances stay
+      // attributed to the renamed player.
       if (!userId) return json({ error: "no account" }, 401);
-      const raw = String((body as { username?: string }).username || "").trim();
-      if (!USERNAME_RE.test(raw)) return json({ error: "username must be 3-20 letters, numbers or underscores" }, 400);
-      const { data: existing } = await sb.from("profiles").select("username").eq("user_id", userId).maybeSingle();
-      if (existing) return json({ profile: { username: (existing as { username: string }).username } });
-      const { error: ie } = await sb.from("profiles").insert({ user_id: userId, username: raw });
-      if (ie) {
-        if (ie.code === "23505") {
-          // Either we raced ourselves (PK) or the handle is taken (unique index).
-          const { data: now } = await sb.from("profiles").select("username").eq("user_id", userId).maybeSingle();
-          if (now) return json({ profile: { username: (now as { username: string }).username } });
-          return json({ error: "that username is taken" }, 409);
-        }
-        throw ie;
+      const code = String((body as { code?: string }).code || "").toUpperCase();
+      const newName = String((body as { name?: string }).name || "").trim();
+      if (!newName) return json({ error: "name required" }, 400);
+      const { data: tracker, error: e1 } = await sb.from("trackers").select().eq("code", code).single();
+      if (e1 || !tracker) return json({ error: "group not found" }, 404);
+      const { data: mem } = await sb.from("members").select("name").eq("tracker_id", tracker.id).eq("user_id", userId).maybeSingle();
+      const oldName = mem ? (mem as { name: string }).name : null;
+      if (!oldName) return json({ error: "you haven't joined this group" }, 400);
+      if (oldName !== newName) {
+        const players: string[] = Array.isArray(tracker.players) ? tracker.players : [];
+        if (players.includes(newName)) return json({ error: "that name is taken in this group" }, 409);
+        const { error: re } = await sb.rpc("rename_player", { p_id: tracker.id, p_user: userId, p_old: oldName, p_new: newName });
+        if (re) return json({ error: re.code === "23505" ? "that name is taken in this group" : re.message }, re.code === "23505" ? 409 : 500);
       }
-      return json({ profile: { username: raw } });
+      const { data: t2 } = await sb.from("trackers").select().eq("code", code).single();
+      const { data: actions, error: e3 } = await sb
+        .from("actions").select().eq("tracker_id", tracker.id).order("created_at", { ascending: true });
+      if (e3) throw e3;
+      const info = await seatInfo(sb, tracker.id, userId);
+      return json({ tracker: t2 || tracker, actions: actions || [], me: info.me, claimedNames: info.claimedNames });
     }
 
     if (op === "create") {
@@ -319,8 +280,14 @@ Deno.serve(async (req) => {
       if (e1 || !tracker) return json({ error: "tracker not found" }, 404);
 
       if (op === "action") {
-        const { summary, transfers } = body as unknown as { summary: string; transfers: unknown };
+        const { summary, transfers } = body as unknown as { summary: string; transfers: Array<{ payer?: string; payee?: string }> };
         if (!summary || !Array.isArray(transfers)) return json({ error: "summary + transfers required" }, 400);
+        // Reject transfers that name a seat no longer in the roster — e.g. a
+        // rename landed while this client still held the old name. Otherwise the
+        // money would attach to a ghost name and balances wouldn't sum to zero.
+        const roster = new Set(Array.isArray(tracker.players) ? tracker.players : []);
+        const stale = transfers.flatMap((t) => [t.payer, t.payee]).find((n) => n && !roster.has(n));
+        if (stale) return json({ error: "roster changed — refresh and try again" }, 409);
         const { error: e2 } = await sb.from("actions").insert({ tracker_id: tracker.id, actioner, summary, transfers });
         if (e2) throw e2;
       }

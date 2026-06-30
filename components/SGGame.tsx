@@ -24,13 +24,11 @@ import {
   joinNew,
   myGroups,
   addRemoteAction,
+  renameSeat,
   rememberGroup,
   localGroups,
   setLocalGroups,
-  getMe,
-  setUsername,
   GroupSummary,
-  Profile,
   BOT_APP_LINK,
   TrackerState,
 } from "@/lib/sg/remote";
@@ -56,12 +54,14 @@ export default function SGGame({ onOpenRiichi }: { onOpenRiichi: () => void }) {
   const [tgChatId, setTgChatId] = useState<number | undefined>(undefined);
   const [active, setActive] = useState<GroupSummary[]>([]);   // groups THIS account is in
   const [chatGroups, setChatGroups] = useState<GroupSummary[]>([]); // this chat's groups you can join
-  const [profile, setProfile] = useState<Profile | null | undefined>(undefined); // undefined = unknown, null = needs username
-  const [suggested, setSuggested] = useState("");
   const [booting, setBooting] = useState(true);
-  const [bootError, setBootError] = useState(""); // getMe failed (transient, or opened outside Telegram)
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // Inside Telegram we have a validated account; outside (plain browser) we
+  // don't. canSync also needs the backend URL configured. Anything that hits
+  // the server (loading, create/join, opening a group) requires canSync.
+  const inTelegram = typeof window !== "undefined" && Boolean(window.Telegram?.WebApp?.initData);
+  const canSync = inTelegram && syncEnabled();
 
   // Enter a group: if you've claimed a seat -> dashboard; if not -> the Join
   // screen (take a seat / join as new). Only claimed groups become "yours".
@@ -70,11 +70,15 @@ export default function SGGame({ onOpenRiichi }: { onOpenRiichi: () => void }) {
     else { setOpen(null); setJoining(s); }
   };
 
-  // Decide where to land once we know the account has a username. A direct
-  // group-code link opens that group; otherwise show the home (account groups +
-  // this chat's groups to join).
-  const routeAfterAuth = () => {
+  // Resolve the launch. A direct group-code link opens that group; otherwise
+  // show the home (account groups + this chat's groups to join). No username
+  // gate — identity is the Telegram account; you pick a name when you join.
+  useEffect(() => {
+    setActive(localGroups()); // instant paint from the on-device cache
     const { tgChatId: cid, code } = parseStartParam();
+    if (cid !== undefined) setTgChatId(cid);
+    if (!canSync) { setBooting(false); return; } // outside Telegram / unconfigured: nothing to load
+
     if (code) {
       setBusy(true);
       openGroup(code)
@@ -99,57 +103,9 @@ export default function SGGame({ onOpenRiichi }: { onOpenRiichi: () => void }) {
         }
       })
       .finally(() => setBooting(false));
-  };
-
-  // Load the account's username, then route. Extracted so the boot-error screen
-  // can retry it — a transient getMe() failure must not strand a first-time
-  // user (leaving profile=undefined would skip the gate AND the home).
-  const bootstrap = () => {
-    setBooting(true); setBootError("");
-    getMe()
-      .then(({ profile: p, suggested: s }) => {
-        setProfile(p);
-        setSuggested(s);
-        if (p) routeAfterAuth();      // already has a username -> proceed
-        else setBooting(false);        // first time -> show the username screen
-      })
-      .catch((e) => { setBootError(String((e as Error).message || e)); setBooting(false); });
-  };
-
-  // Resolve the launch. First require a username (set once, on first ever use);
-  // only then route to the group / home.
-  useEffect(() => {
-    setActive(localGroups()); // instant paint from the on-device cache
-    const { tgChatId: cid } = parseStartParam();
-    if (cid !== undefined) setTgChatId(cid);
-    if (!syncEnabled()) { setBooting(false); return; } // outside Telegram: no account, no gate
-    bootstrap();
   }, []);
 
   if (booting) return null;
-
-  // Couldn't reach the server (or opened outside Telegram). Don't fake the
-  // username gate — show an honest retry instead of stranding the user.
-  if (bootError)
-    return (
-      <div>
-        <h1>Mahjong</h1>
-        <p style={{ color: "#e54848" }}>{bootError}</p>
-        <p style={{ opacity: 0.7, fontSize: "0.9rem" }}>
-          Couldn&apos;t reach the server. If you opened this outside Telegram, open it from the bot instead.
-        </p>
-        <button className="primary-btn" onClick={bootstrap}>Retry</button>
-      </div>
-    );
-
-  // First-ever use: pick a unique username before anything else.
-  if (syncEnabled() && profile === null)
-    return (
-      <ChooseUsername
-        suggested={suggested}
-        onDone={(p) => { setProfile(p); setBooting(true); routeAfterAuth(); }}
-      />
-    );
 
   // Re-read the cache on returning home so a just-created/joined/opened group
   // shows in "Your groups" — and drops out of the chat's "to join" list.
@@ -170,7 +126,7 @@ export default function SGGame({ onOpenRiichi }: { onOpenRiichi: () => void }) {
   if (open) return <SyncPlay initial={open} onBack={goHome} />;
 
   if (joining)
-    return <JoinGroup state={joining} busy={busy} defaultName={profile?.username} onClaimed={enter}
+    return <JoinGroup state={joining} busy={busy} onClaimed={enter}
       onBack={() => { setJoining(null); goHome(); }} />;
 
   if (view === "create")
@@ -198,8 +154,7 @@ export default function SGGame({ onOpenRiichi }: { onOpenRiichi: () => void }) {
   return (
     <div>
       <h1>Mahjong</h1>
-      {profile?.username && <p style={{ opacity: 0.6, fontSize: "0.85rem", marginTop: -8 }}>Signed in as {profile.username}</p>}
-      {!syncEnabled() && <p style={{ color: "#e54848", fontSize: "0.85rem" }}>Open this inside Telegram to use shared groups.</p>}
+      {!inTelegram && <p style={{ color: "#e54848", fontSize: "0.85rem" }}>Open this inside Telegram to use shared groups.</p>}
       {error && <p style={{ color: "#e54848" }}>{error}</p>}
 
       <h2>Your groups</h2>
@@ -208,7 +163,7 @@ export default function SGGame({ onOpenRiichi }: { onOpenRiichi: () => void }) {
       ) : (
         <div className="balances">
           {active.map((g) => (
-            <div key={g.code} className="bal-row" style={{ cursor: "pointer" }} onClick={() => openByCode(g.code)}>
+            <div key={g.code} className="bal-row" style={{ cursor: canSync ? "pointer" : "default" }} onClick={() => canSync && openByCode(g.code)}>
               <span>{g.name || g.code}</span>
               <span style={{ opacity: 0.55, fontSize: "0.8rem" }}>{g.code}{g.players ? ` · ${g.players}p` : ""}</span>
             </div>
@@ -222,7 +177,7 @@ export default function SGGame({ onOpenRiichi }: { onOpenRiichi: () => void }) {
           <p style={{ opacity: 0.6, fontSize: "0.78rem", marginTop: 0 }}>Tap to join — it&apos;ll be added to your groups.</p>
           <div className="balances">
             {chatGroups.map((g) => (
-              <div key={g.code} className="bal-row" style={{ cursor: "pointer" }} onClick={() => openByCode(g.code)}>
+              <div key={g.code} className="bal-row" style={{ cursor: canSync ? "pointer" : "default" }} onClick={() => canSync && openByCode(g.code)}>
                 <span>{g.name || g.code}</span>
                 <span style={{ opacity: 0.55, fontSize: "0.8rem" }}>{g.code}{g.players ? ` · ${g.players}p` : ""}</span>
               </div>
@@ -232,52 +187,13 @@ export default function SGGame({ onOpenRiichi }: { onOpenRiichi: () => void }) {
       )}
 
       <div className="choices" style={{ marginTop: 14 }}>
-        <div className="choice-btn" onClick={() => syncEnabled() && setView("create")}
-          style={syncEnabled() ? undefined : { opacity: 0.5, cursor: "not-allowed" }}>Create a new group<small>Set players + payouts</small></div>
-        <div className="choice-btn" onClick={() => syncEnabled() && setView("join")}
-          style={syncEnabled() ? undefined : { opacity: 0.5, cursor: "not-allowed" }}>Join with a code<small>Enter a shared code</small></div>
+        <div className="choice-btn" onClick={() => canSync && setView("create")}
+          style={canSync ? undefined : { opacity: 0.5, cursor: "not-allowed" }}>Create a new group<small>Set players + payouts</small></div>
+        <div className="choice-btn" onClick={() => canSync && setView("join")}
+          style={canSync ? undefined : { opacity: 0.5, cursor: "not-allowed" }}>Join with a code<small>Enter a shared code</small></div>
       </div>
 
       <button className="link-btn" onClick={onOpenRiichi}>Riichi hand calculator →</button>
-    </div>
-  );
-}
-
-// First-ever use: pick a unique username. Pre-filled with a server-suggested
-// (available) handle derived from the Telegram name; editable.
-function ChooseUsername({ suggested, onDone }: { suggested: string; onDone: (p: Profile) => void }) {
-  const [name, setName] = useState(suggested || "");
-  const [err, setErr] = useState("");
-  const [saving, setSaving] = useState(false);
-  const valid = /^[A-Za-z0-9_]{3,20}$/.test(name.trim());
-  const save = async () => {
-    setSaving(true); setErr("");
-    try { onDone((await setUsername(name.trim())).profile); }
-    catch (e) {
-      setErr(String((e as Error).message || e));
-      setSaving(false);
-      // The pre-filled suggestion may have just been taken by someone else.
-      // Pull a fresh available one so the user isn't stuck on a dead value.
-      try { const { suggested: fresh } = await getMe(); if (fresh && fresh !== name.trim()) setName(fresh); }
-      catch { /* keep what they typed */ }
-    }
-  };
-  return (
-    <div>
-      <h1>Pick a username</h1>
-      <p style={{ opacity: 0.75, fontSize: "0.9rem" }}>
-        This is how you&apos;ll appear in mahjong. It&apos;s unique to you and stays the same across every group.
-      </p>
-      <input
-        className="text-input" autoFocus placeholder="username" value={name} maxLength={20}
-        onChange={(e) => setName(e.target.value)}
-        onKeyDown={(e) => { if (e.key === "Enter" && valid && !saving) save(); }}
-      />
-      <p style={{ fontSize: "0.78rem", opacity: 0.6, marginTop: 4 }}>3–20 characters · letters, numbers, underscore</p>
-      <button className="primary-btn" disabled={!valid || saving} onClick={save}>
-        {saving ? "Saving…" : "Continue"}
-      </button>
-      {err && <p style={{ color: "#e54848" }}>{err}</p>}
     </div>
   );
 }
@@ -321,13 +237,11 @@ function JoinForm({
 function JoinGroup({
   state,
   busy,
-  defaultName,
   onClaimed,
   onBack,
 }: {
   state: TrackerState;
   busy: boolean;
-  defaultName?: string;
   onClaimed: (s: TrackerState) => void;
   onBack: () => void;
 }) {
@@ -336,12 +250,16 @@ function JoinGroup({
   const claimed = new Set(state.claimedNames || []);
   const unclaimed = (state.tracker.players || []).filter((p) => !claimed.has(p));
   const u = typeof window !== "undefined" ? window.Telegram?.WebApp?.initDataUnsafe?.user : undefined;
-  // Pre-fill the new-player name with the first candidate that ISN'T already a
-  // seat here — otherwise "Join as X" would 409 on the unique (group, name).
-  const initialName = [defaultName, u?.first_name, u?.username]
-    .map((c) => (c || "").trim())
-    .find((c) => c && !roster.has(c)) || "";
-  const [newName, setNewName] = useState(initialName);
+  // Pre-fill the new-player name from your Telegram name — but never a name
+  // that's already a seat here (else "Join as X" would 409 on the unique
+  // (group, name)). If your Telegram name collides, suffix a number so the
+  // field is never blank.
+  const tgName = (u?.first_name || u?.username || "").trim();
+  let suggestedName = [u?.first_name, u?.username].map((c) => (c || "").trim()).find((c) => c && !roster.has(c)) || "";
+  if (!suggestedName && tgName) {
+    for (let i = 2; i < 99 && !suggestedName; i++) if (!roster.has(`${tgName} ${i}`)) suggestedName = `${tgName} ${i}`;
+  }
+  const [newName, setNewName] = useState(suggestedName);
   const [working, setWorking] = useState(false);
   const [err, setErr] = useState("");
   const run = async (fn: () => Promise<TrackerState>) => {
@@ -382,16 +300,25 @@ function JoinGroup({
 function SyncPlay({ initial, onBack }: { initial: TrackerState; onBack: () => void }) {
   const [state, setState] = useState<TrackerState>(initial);
   const [syncing, setSyncing] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [newSeat, setNewSeat] = useState("");
+  const [renameErr, setRenameErr] = useState("");
   const code = state.tracker.code;
   const players = state.tracker.players;
   const bases = state.tracker.bases;
   const busyRef = useRef(false);
+  const renamingRef = useRef(false); // pause polling while the rename editor is open
+  // Monotonic epoch bumped on every local mutation. A poll started under an
+  // older epoch must NOT overwrite state written by a newer mutation that
+  // resolved first (a late-resolving getState would otherwise revert it).
+  const epochRef = useRef(0);
 
   // Poll for others' changes.
   useEffect(() => {
     const id = setInterval(async () => {
-      if (busyRef.current) return;
-      try { setState(await getState(code)); } catch { /* keep last */ }
+      if (busyRef.current || renamingRef.current) return;
+      const e = epochRef.current;
+      try { const s = await getState(code); if (epochRef.current === e) setState(s); } catch { /* keep last */ }
     }, 2500);
     return () => clearInterval(id);
   }, [code]);
@@ -401,11 +328,31 @@ function SyncPlay({ initial, onBack }: { initial: TrackerState; onBack: () => vo
   const shareLink = `${BOT_APP_LINK}?startapp=${code}`;
 
   const record = async (summary: string, transfers: Transfer[]) => {
-    busyRef.current = true;
+    busyRef.current = true; epochRef.current++;
     setSyncing(true);
     try { setState(await addRemoteAction(code, summary, transfers)); }
-    catch (e) { alert("Couldn't record: " + (e as Error).message); }
+    catch (e) {
+      alert("Couldn't record: " + (e as Error).message);
+      // The roster may have changed under us (e.g. a rename) -> refresh so the
+      // user re-picks against the current seats.
+      try { const s = await getState(code); epochRef.current++; setState(s); } catch { /* keep last */ }
+    }
     finally { busyRef.current = false; setSyncing(false); }
+  };
+
+  const openRename = () => { setNewSeat(state.me || ""); setRenameErr(""); setRenaming(true); renamingRef.current = true; };
+  const closeRename = () => { setRenaming(false); setRenameErr(""); renamingRef.current = false; };
+
+  // Rename your own seat (your display name in this group). The server rewrites
+  // the roster + past transfers so your balance follows the new name.
+  const doRename = async () => {
+    const nm = newSeat.trim();
+    if (!nm || nm === state.me) { closeRename(); return; }
+    busyRef.current = true; epochRef.current++;
+    setRenameErr("");
+    try { setState(await renameSeat(code, nm)); closeRename(); }
+    catch (e) { setRenameErr(String((e as Error).message || e)); }
+    finally { busyRef.current = false; }
   };
 
   return (
@@ -418,7 +365,27 @@ function SyncPlay({ initial, onBack }: { initial: TrackerState; onBack: () => vo
       onBack={onBack}
       banner={
         <div className="result" style={{ marginTop: 0, marginBottom: 14 }}>
-          <div className="line"><strong>Code {code}</strong> {syncing ? "· syncing…" : "· live"}{state.me ? ` · you are ${state.me}` : ""}</div>
+          <div className="line">
+            <strong>Code {code}</strong> {syncing ? "· syncing…" : "· live"}
+            {state.me && !renaming && (
+              <> · you are{" "}
+                <button className="link-btn" style={{ padding: 0, fontSize: "inherit", verticalAlign: "baseline" }}
+                  onClick={openRename}>
+                  {state.me} ✎
+                </button>
+              </>
+            )}
+          </div>
+          {renaming && (
+            <div className="line" style={{ marginTop: 6 }}>
+              <input className="text-input small" autoFocus value={newSeat} maxLength={40}
+                onChange={(e) => setNewSeat(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") doRename(); }} />
+              <button className="chip" onClick={doRename}>Save</button>
+              <button className="chip" onClick={closeRename}>Cancel</button>
+              {renameErr && <span style={{ color: "#e54848", fontSize: "0.8rem" }}> {renameErr}</span>}
+            </div>
+          )}
           <div className="line" style={{ fontSize: "0.8rem", wordBreak: "break-all" }}>{shareLink}</div>
         </div>
       }
