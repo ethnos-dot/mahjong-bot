@@ -16,11 +16,20 @@ export interface Tracker {
   bases: PayoutConfig;
 }
 
+// Structured action so the log can render CURRENT seat names (rename rewrites
+// the role fields in meta). `summary` stays as a fallback for pre-meta rows.
+export type ActionMeta =
+  | { k: "hu"; tai: number; winner: string; discarder: string }
+  | { k: "zimo"; tai: number; winner: string }
+  | { k: "gang"; konger: string; payer: string | null }
+  | { k: "yao"; biter: string; target: string | null };
+
 export interface RemoteAction {
   id: string;
   actioner: string;
   summary: string;
   transfers: Transfer[];
+  meta?: ActionMeta | null;
   created_at: string;
 }
 
@@ -89,8 +98,8 @@ export const setupGroup = (code: string, name: string, players: string[], bases:
 
 export const getState = (code: string) => call<TrackerState>("state", { code });
 
-export const addRemoteAction = (code: string, summary: string, transfers: Transfer[]) =>
-  call<TrackerState>("action", { code, summary, transfers });
+export const addRemoteAction = (code: string, summary: string, transfers: Transfer[], meta?: ActionMeta) =>
+  call<TrackerState>("action", { code, summary, transfers, meta });
 
 /** Parse the launch deep-link param Telegram passes via ?startapp=<x>:
  *  - `g<chatId>` (lowercase g) → opened from a Telegram group; returns its id.

@@ -280,7 +280,7 @@ Deno.serve(async (req) => {
       if (e1 || !tracker) return json({ error: "tracker not found" }, 404);
 
       if (op === "action") {
-        const { summary, transfers } = body as unknown as { summary: string; transfers: Array<{ payer?: string; payee?: string }> };
+        const { summary, transfers, meta } = body as unknown as { summary: string; transfers: Array<{ payer?: string; payee?: string }>; meta?: unknown };
         if (!summary || !Array.isArray(transfers)) return json({ error: "summary + transfers required" }, 400);
         // Reject transfers that name a seat no longer in the roster — e.g. a
         // rename landed while this client still held the old name. Otherwise the
@@ -288,7 +288,7 @@ Deno.serve(async (req) => {
         const roster = new Set(Array.isArray(tracker.players) ? tracker.players : []);
         const stale = transfers.flatMap((t) => [t.payer, t.payee]).find((n) => n && !roster.has(n));
         if (stale) return json({ error: "roster changed — refresh and try again" }, 409);
-        const { error: e2 } = await sb.from("actions").insert({ tracker_id: tracker.id, actioner, summary, transfers });
+        const { error: e2 } = await sb.from("actions").insert({ tracker_id: tracker.id, actioner, summary, transfers, meta: meta ?? null });
         if (e2) throw e2;
       }
 

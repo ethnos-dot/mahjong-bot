@@ -31,11 +31,27 @@ import {
   GroupSummary,
   BOT_APP_LINK,
   TrackerState,
+  ActionMeta,
 } from "@/lib/sg/remote";
 
 type Bases = PayoutConfig;
-type LogEntry = { summary: string; transfers: Transfer[]; actioner?: string };
+type LogEntry = { summary: string; transfers: Transfer[]; actioner?: string; meta?: ActionMeta | null };
 const money = (n: number) => n.toFixed(2);
+
+// Render a log line from structured meta so it reflects the CURRENT seat names
+// (rename rewrites the names in meta). Falls back to the frozen summary for
+// pre-meta rows or anything unrecognized.
+function renderLogLine(e: LogEntry): string {
+  const m = e.meta;
+  if (!m) return e.summary;
+  switch (m.k) {
+    case "hu": return `Hu: ${m.winner} wins off ${m.discarder} (${m.tai} tai)`;
+    case "zimo": return `Zimo: ${m.winner} self-draws (${m.tai} tai)`;
+    case "gang": return `Gang: ${m.konger} kong${m.payer ? ` off ${m.payer}` : " (all pay)"}`;
+    case "yao": return `Yao: ${m.biter} bite${m.target ? ` on ${m.target}` : " (all pay)"}`;
+    default: return e.summary;
+  }
+}
 
 function computeBalances(players: string[], log: { transfers: Transfer[] }[]): Record<string, number> {
   const b: Record<string, number> = Object.fromEntries(players.map((p) => [p, 0]));
@@ -323,14 +339,14 @@ function SyncPlay({ initial, onBack }: { initial: TrackerState; onBack: () => vo
     return () => clearInterval(id);
   }, [code]);
 
-  const log: LogEntry[] = state.actions.map((a) => ({ summary: a.summary, transfers: a.transfers, actioner: a.actioner }));
+  const log: LogEntry[] = state.actions.map((a) => ({ summary: a.summary, transfers: a.transfers, actioner: a.actioner, meta: a.meta }));
   const balances = computeBalances(players, log);
   const shareLink = `${BOT_APP_LINK}?startapp=${code}`;
 
-  const record = async (summary: string, transfers: Transfer[]) => {
+  const record = async (summary: string, transfers: Transfer[], meta?: ActionMeta) => {
     busyRef.current = true; epochRef.current++;
     setSyncing(true);
-    try { setState(await addRemoteAction(code, summary, transfers)); }
+    try { setState(await addRemoteAction(code, summary, transfers, meta)); }
     catch (e) {
       alert("Couldn't record: " + (e as Error).message);
       // The roster may have changed under us (e.g. a rename) -> refresh so the
@@ -585,7 +601,7 @@ function Dashboard({
   bases: Bases;
   balances: Record<string, number>;
   log: LogEntry[];
-  onRecord: (summary: string, transfers: Transfer[]) => void;
+  onRecord: (summary: string, transfers: Transfer[], meta?: ActionMeta) => void;
   onEnd?: () => void;
   onBack: () => void;
   banner?: React.ReactNode;
@@ -593,7 +609,7 @@ function Dashboard({
   const [action, setAction] = useState<Action | null>(null);
 
   if (action) return <ActionForm action={action} players={players} bases={bases} onCancel={() => setAction(null)}
-    onConfirm={(s, t) => { onRecord(s, t); setAction(null); }} />;
+    onConfirm={(s, t, m) => { onRecord(s, t, m); setAction(null); }} />;
 
   return (
     <div>
@@ -628,7 +644,7 @@ function Dashboard({
           <h2>Log</h2>
           <div className="log">
             {log.map((e, i) => (
-              <div key={i} className="log-row">{i + 1}. {e.summary}{e.actioner ? ` — ${e.actioner}` : ""}</div>
+              <div key={i} className="log-row">{i + 1}. {renderLogLine(e)}{e.actioner ? ` — ${e.actioner}` : ""}</div>
             ))}
           </div>
         </>
@@ -662,7 +678,7 @@ function ActionForm({
   players: string[];
   bases: Bases;
   onCancel: () => void;
-  onConfirm: (summary: string, transfers: Transfer[]) => void;
+  onConfirm: (summary: string, transfers: Transfer[], meta: ActionMeta) => void;
 }) {
   const playerOpts = players.map((p) => ({ v: p, label: p }));
   const tais = Array.from({ length: maxTaiOf(bases) }, (_, i) => i + 1);
@@ -670,33 +686,37 @@ function ActionForm({
   const set = (k: string, v: string) => setS((prev) => ({ ...prev, [k]: v }));
 
   let ready = false;
-  let build: (() => { summary: string; transfers: Transfer[] }) | null = null;
+  let build: (() => { summary: string; transfers: Transfer[]; meta: ActionMeta }) | null = null;
 
   if (action === "hu") {
     ready = !!(s.tai && s.winner && s.discarder && s.winner !== s.discarder);
     build = () => {
       const tai = parseInt(s.tai); const value = discardValue(bases, tai);
-      return { summary: `Hu: ${s.winner} wins off ${s.discarder} (${tai} tai)`, transfers: settleDiscardWin(s.winner, s.discarder, value) };
+      return { summary: `Hu: ${s.winner} wins off ${s.discarder} (${tai} tai)`, transfers: settleDiscardWin(s.winner, s.discarder, value),
+        meta: { k: "hu", tai, winner: s.winner, discarder: s.discarder } };
     };
   } else if (action === "zimo") {
     ready = !!(s.tai && s.winner);
     build = () => {
       const tai = parseInt(s.tai); const perPlayer = zimoEachValue(bases, tai);
-      return { summary: `Zimo: ${s.winner} self-draws (${tai} tai)`, transfers: settleSelfDraw(s.winner, perPlayer, players) };
+      return { summary: `Zimo: ${s.winner} self-draws (${tai} tai)`, transfers: settleSelfDraw(s.winner, perPlayer, players),
+        meta: { k: "zimo", tai, winner: s.winner } };
     };
   } else if (action === "gang") {
     ready = !!(s.konger && s.gscope && (s.gscope !== "one" || (s.gpayer && s.gpayer !== s.konger)));
     build = () => {
       const payer = s.gscope === "one" ? s.gpayer : null;
       return { summary: `Gang: ${s.konger} kong${payer ? ` off ${payer}` : " (all pay)"}`,
-        transfers: settleGang(s.konger, bases.gang, players, payer) };
+        transfers: settleGang(s.konger, bases.gang, players, payer),
+        meta: { k: "gang", konger: s.konger, payer: payer ?? null } };
     };
   } else {
     ready = !!(s.biter && s.scope && (s.scope !== "one" || (s.target && s.target !== s.biter)));
     build = () => {
       const target = s.scope === "one" ? s.target : null;
       return { summary: `Yao: ${s.biter} bite${target ? ` on ${target}` : " (all pay)"}`,
-        transfers: settleYao(s.biter, bases.yao, players, target) };
+        transfers: settleYao(s.biter, bases.yao, players, target),
+        meta: { k: "yao", biter: s.biter, target: target ?? null } };
     };
   }
 
@@ -724,7 +744,7 @@ function ActionForm({
         {s.scope === "one" && (<><h2>Who pays</h2><Chips options={playerOpts} value={s.target ?? null} onChange={(v) => set("target", v)} /></>)}
       </>)}
 
-      <button className="primary-btn" disabled={!ready} onClick={() => build && onConfirm(build().summary, build().transfers)}>
+      <button className="primary-btn" disabled={!ready} onClick={() => { if (build) { const r = build(); onConfirm(r.summary, r.transfers, r.meta); } }}>
         Confirm {action.toUpperCase()}
       </button>
       <button className="link-btn" onClick={onCancel}>← Cancel</button>

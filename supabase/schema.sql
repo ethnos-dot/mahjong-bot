@@ -30,11 +30,13 @@ create table if not exists actions (
   id          uuid primary key default gen_random_uuid(),
   tracker_id  uuid not null references trackers(id) on delete cascade,
   actioner    text not null,                         -- Telegram display name that entered it
-  summary     text not null,
+  summary     text not null,                         -- frozen text (fallback for pre-meta rows)
   transfers   jsonb not null,                        -- [{payer,payee,amount}]
+  meta        jsonb,                                 -- {k, tai?, winner?/discarder?/konger?/payer?/biter?/target?}; lets the log render CURRENT names
   created_at  timestamptz not null default now()
 );
 create index if not exists actions_tracker_idx on actions (tracker_id, created_at);
+alter table actions add column if not exists meta jsonb; -- migration for existing tables
 
 -- Account-based membership: which Telegram user (account) belongs to which group,
 -- so "your groups" follows the account across devices. user_id comes from the
@@ -96,6 +98,14 @@ begin
       end order by ord)
     from jsonb_array_elements(transfers) with ordinality as t(e, ord)
   ), '[]'::jsonb) where tracker_id = p_id;
+  -- Rewrite the player-role fields inside actions.meta (exact match only, so no
+  -- free-text substring hazard) — keeps the rendered log on current names.
+  update actions set meta = (
+    select jsonb_object_agg(key,
+      case when key in ('winner','discarder','konger','payer','biter','target') and value = to_jsonb(p_old)
+           then to_jsonb(p_new) else value end)
+    from jsonb_each(meta)
+  ) where tracker_id = p_id and meta is not null;
 end $$;
 revoke all on function rename_player(uuid, bigint, text, text) from public, anon, authenticated;
 grant execute on function rename_player(uuid, bigint, text, text) to service_role;
