@@ -3,7 +3,7 @@
 // Client layer for the group-synced tracker. All calls go to the Supabase
 // `track` Edge Function, which validates Telegram initData server-side.
 
-import { Transfer } from "./payout";
+import { Transfer, PayoutConfig } from "./payout";
 
 const TRACK_URL = process.env.NEXT_PUBLIC_TRACK_URL || "";
 
@@ -13,7 +13,7 @@ export interface Tracker {
   game: string;
   name: string;
   players: string[];
-  bases: { tai: number; yao: number; gang: number };
+  bases: PayoutConfig;
 }
 
 export interface RemoteAction {

@@ -1,10 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useLocalStorage } from "@/lib/useLocalStorage";
 import {
   Transfer,
-  fanToValue,
+  PayoutConfig,
+  discardValue,
+  zimoEachValue,
+  maxTaiOf,
   settleDiscardWin,
   settleSelfDraw,
   settleYao,
@@ -22,9 +25,9 @@ import {
   TrackerState,
 } from "@/lib/sg/remote";
 
-type Bases = { tai: number; yao: number; gang: number };
+type Bases = PayoutConfig;
 type LogEntry = { summary: string; transfers: Transfer[]; actioner?: string };
-const TAI = Array.from({ length: 10 }, (_, i) => i + 1);
+const money = (n: number) => n.toFixed(2);
 
 function computeBalances(players: string[], log: { transfers: Transfer[] }[]): Record<string, number> {
   const b: Record<string, number> = Object.fromEntries(players.map((p) => [p, 0]));
@@ -93,7 +96,7 @@ function LocalGame({ onBack }: { onBack: () => void }) {
         onBack={onBack}
       />
     );
-  const bases: Bases = { tai: game.tai, yao: game.yao, gang: game.gang };
+  const bases: Bases = game;
   const balances = computeBalances(game.players, game.log);
   return (
     <Dashboard
@@ -279,10 +282,77 @@ function Setup({
 }) {
   const [name, setName] = useState("");
   const [names, setNames] = useState(["", "", "", ""]);
-  const [tai, setTai] = useState("0.10");
+  // Payouts (per session). discard = what a single shooter pays at 1 tai;
+  // zimo = what EACH other player pays on a self-draw at 1 tai. Both double per
+  // tai. Defaults reproduce the original house rule (self-draw each = 2×).
+  const [discard, setDiscard] = useState("0.10");
+  const [zimo, setZimo] = useState(""); // blank = auto 2× the shooter value
   const [yao, setYao] = useState("0.20");
   const [gang, setGang] = useState("0.20");
-  const ready = names.every((n) => n.trim());
+  const [maxTai, setMaxTai] = useState("10");
+  const [advanced, setAdvanced] = useState(false);
+  const [cap, setCap] = useState("");
+  const [customOn, setCustomOn] = useState(false);
+  const [rows, setRows] = useState<{ d: string; z: string }[]>([]);
+
+  const num = (s: string, d: number) => { const v = parseFloat(s); return isFinite(v) ? v : d; };
+  const pos = (s: string, d: number) => { const v = parseFloat(s); return isFinite(v) && v >= 0 ? v : d; };
+  const shooter = pos(discard, 0.1);          // discard base; must be > 0
+  const selfDraw = pos(zimo, shooter * 2);    // blank -> auto 2× shooter (house rule)
+  const ready = names.every((n) => n.trim()) && shooter > 0;
+  const mt = Math.max(1, Math.min(20, Math.floor(num(maxTai, 10))));
+  const capN = Math.floor(num(cap, mt));
+  const useCap = cap.trim() !== "" && capN >= 1 && capN < mt;
+
+  // A config built from the current fields (without custom tables) — used to
+  // show the doubling preview/placeholders.
+  const previewCfg: PayoutConfig = {
+    tai: shooter, zimo: selfDraw,
+    yao: pos(yao, 0.2), gang: pos(gang, 0.2), maxTai: mt, ...(useCap ? { cap: capN } : {}),
+  };
+
+  // Keep the per-tai custom rows in sync with max tai (drop hidden stale rows).
+  useEffect(() => { setRows((arr) => (arr.length > mt ? arr.slice(0, mt) : arr)); }, [mt]);
+
+  const setRow = (i: number, k: "d" | "z", v: string) =>
+    setRows((arr) => {
+      const next = arr.slice();
+      while (next.length < mt) next.push({ d: "", z: "" });
+      next[i] = { ...next[i], [k]: v };
+      return next;
+    });
+
+  const usePreset = () => {
+    // sgmahjong.club 10¢/20¢: shooter $0.40 / self-draw each $0.20 at 1 tai,
+    // doubling to 10 tai; bite & kong $0.10.
+    setDiscard("0.40"); setZimo("0.20"); setYao("0.10"); setGang("0.10");
+    setMaxTai("10"); setAdvanced(false); setCap(""); setCustomOn(false); setRows([]);
+  };
+
+  const submit = () => {
+    const cfg: PayoutConfig = {
+      tai: shooter,
+      zimo: selfDraw,
+      yao: pos(yao, 0.2),
+      gang: pos(gang, 0.2),
+      maxTai: mt,
+    };
+    if (useCap) cfg.cap = capN;
+    if (customOn) {
+      const col = (k: "d" | "z") =>
+        Array.from({ length: mt }, (_, i) => {
+          const raw = rows[i]?.[k]?.trim();
+          if (!raw) return null;
+          const v = parseFloat(raw);
+          return isFinite(v) && v >= 0 ? v : null;
+        });
+      const dTab = col("d");
+      const zTab = col("z");
+      if (dTab.some((v) => v != null)) cfg.discardTable = dTab;
+      if (zTab.some((v) => v != null)) cfg.zimoTable = zTab;
+    }
+    onStart(name.trim() || "Mahjong", names.map((n) => n.trim()), cfg);
+  };
 
   return (
     <div>
@@ -294,19 +364,68 @@ function Setup({
         <input key={i} className="text-input" placeholder={`Player ${i + 1}`} value={n}
           onChange={(e) => setNames((arr) => arr.map((x, j) => (j === i ? e.target.value : x)))} />
       ))}
-      <h2>Base values</h2>
+
+      <h2>Payouts</h2>
+      <p style={{ fontSize: "0.8rem", opacity: 0.7, marginTop: -4 }}>
+        Values at 1 tai; they double each tai. Set these to match your table.
+      </p>
       <div className="row" style={{ alignItems: "center" }}>
-        <label className="vlabel">tai<input className="text-input small" value={tai} onChange={(e) => setTai(e.target.value)} /></label>
-        <label className="vlabel">yao (x)<input className="text-input small" value={yao} onChange={(e) => setYao(e.target.value)} /></label>
-        <label className="vlabel">gang (y)<input className="text-input small" value={gang} onChange={(e) => setGang(e.target.value)} /></label>
+        <label className="vlabel">shooter pays<input className="text-input small" inputMode="decimal" min="0" value={discard} onChange={(e) => setDiscard(e.target.value)} /></label>
+        <label className="vlabel">self-draw (each)<input className="text-input small" inputMode="decimal" min="0" placeholder={money(shooter * 2)} value={zimo} onChange={(e) => setZimo(e.target.value)} /></label>
+        <label className="vlabel">max tai<input className="text-input small" inputMode="numeric" min="1" value={maxTai} onChange={(e) => setMaxTai(e.target.value)} /></label>
       </div>
-      <button
-        className="primary-btn"
-        disabled={!ready || busy}
-        onClick={() => onStart(name.trim() || "Mahjong", names.map((n) => n.trim()), {
-          tai: parseFloat(tai) || 0.1, yao: parseFloat(yao) || 0.2, gang: parseFloat(gang) || 0.2,
-        })}
-      >
+      <div className="row" style={{ alignItems: "center" }}>
+        <label className="vlabel">bite (yao)<input className="text-input small" inputMode="decimal" min="0" value={yao} onChange={(e) => setYao(e.target.value)} /></label>
+        <label className="vlabel">kong (gang)<input className="text-input small" inputMode="decimal" min="0" value={gang} onChange={(e) => setGang(e.target.value)} /></label>
+      </div>
+      <p style={{ fontSize: "0.8rem", opacity: 0.7 }}>
+        e.g. 1 tai → shooter pays {money(discardValue(previewCfg, 1))}, self-draw {money(zimoEachValue(previewCfg, 1))} each ·
+        {" "}{mt} tai → {money(discardValue(previewCfg, mt))} / {money(zimoEachValue(previewCfg, mt))}
+      </p>
+      <p style={{ fontSize: "0.78rem", opacity: 0.6 }}>
+        Leave self-draw blank to keep it at 2× the shooter value (the usual rule). The sgmahjong.club table is the
+        exception — there self-draw is half the shooter. “Max tai” is the highest tai you can pick; bigger wins are
+        charged at the max-tai amount.
+      </p>
+      <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+        <button type="button" className="chip" onClick={usePreset}>Match sgmahjong.club (10¢/20¢)</button>
+        <button type="button" className="chip" onClick={() => setAdvanced((a) => !a)}>{advanced ? "Hide advanced" : "Advanced…"}</button>
+      </div>
+
+      {advanced && (
+        <div style={{ marginTop: 10 }}>
+          <label className="vlabel">doubling cap (tai where value stops doubling — blank = max tai)
+            <input className="text-input small" inputMode="numeric" placeholder={String(mt)} value={cap} onChange={(e) => setCap(e.target.value)} />
+          </label>
+          <div className="row" style={{ alignItems: "center", marginTop: 6 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "0.85rem" }}>
+              <input type="checkbox" checked={customOn} onChange={(e) => setCustomOn(e.target.checked)} />
+              Type the exact amount for each tai (overrides doubling)
+            </label>
+          </div>
+          {customOn && (
+            <div style={{ marginTop: 6 }}>
+              <div className="row" style={{ fontSize: "0.75rem", opacity: 0.6 }}>
+                <span style={{ width: 48 }}>tai</span><span style={{ flex: 1 }}>shooter</span><span style={{ flex: 1 }}>self-draw each</span>
+              </div>
+              {Array.from({ length: mt }, (_, i) => (
+                <div key={i} className="row" style={{ alignItems: "center", gap: 6, marginTop: 4 }}>
+                  <span style={{ width: 48 }}>{i + 1}</span>
+                  <input className="text-input small" style={{ flex: 1 }} inputMode="decimal"
+                    placeholder={money(discardValue(previewCfg, i + 1))}
+                    value={rows[i]?.d ?? ""} onChange={(e) => setRow(i, "d", e.target.value)} />
+                  <input className="text-input small" style={{ flex: 1 }} inputMode="decimal"
+                    placeholder={money(zimoEachValue(previewCfg, i + 1))}
+                    value={rows[i]?.z ?? ""} onChange={(e) => setRow(i, "z", e.target.value)} />
+                </div>
+              ))}
+              <p style={{ fontSize: "0.78rem", opacity: 0.6 }}>Blank rows fall back to the doubling values above.</p>
+            </div>
+          )}
+        </div>
+      )}
+
+      <button className="primary-btn" disabled={!ready || busy} onClick={submit}>
         {busy ? "Creating…" : startLabel || "Start game"}
       </button>
       {error && <p style={{ color: "#e54848" }}>{error}</p>}
@@ -356,6 +475,10 @@ function Dashboard({
           </div>
         ))}
       </div>
+      <p style={{ fontSize: "0.78rem", opacity: 0.65 }}>
+        Payouts · 1 tai: shooter {money(discardValue(bases, 1))} / self-draw {money(zimoEachValue(bases, 1))} each ·
+        {" "}bite {money(bases.yao)} · kong {money(bases.gang)} · up to {maxTaiOf(bases)} tai
+      </p>
 
       <h2>Record action</h2>
       <div className="choices">
@@ -407,6 +530,7 @@ function ActionForm({
   onConfirm: (summary: string, transfers: Transfer[]) => void;
 }) {
   const playerOpts = players.map((p) => ({ v: p, label: p }));
+  const tais = Array.from({ length: maxTaiOf(bases) }, (_, i) => i + 1);
   const [s, setS] = useState<Record<string, string>>({});
   const set = (k: string, v: string) => setS((prev) => ({ ...prev, [k]: v }));
 
@@ -416,14 +540,14 @@ function ActionForm({
   if (action === "hu") {
     ready = !!(s.tai && s.winner && s.discarder && s.winner !== s.discarder);
     build = () => {
-      const tai = parseInt(s.tai); const value = fanToValue(tai, bases.tai);
+      const tai = parseInt(s.tai); const value = discardValue(bases, tai);
       return { summary: `Hu: ${s.winner} wins off ${s.discarder} (${tai} tai)`, transfers: settleDiscardWin(s.winner, s.discarder, value) };
     };
   } else if (action === "zimo") {
     ready = !!(s.tai && s.winner);
     build = () => {
-      const tai = parseInt(s.tai); const value = fanToValue(tai, bases.tai);
-      return { summary: `Zimo: ${s.winner} self-draws (${tai} tai)`, transfers: settleSelfDraw(s.winner, value, players) };
+      const tai = parseInt(s.tai); const perPlayer = zimoEachValue(bases, tai);
+      return { summary: `Zimo: ${s.winner} self-draws (${tai} tai)`, transfers: settleSelfDraw(s.winner, perPlayer, players) };
     };
   } else if (action === "gang") {
     ready = !!(s.gtype && s.konger && (s.gtype !== "shoot" || (s.shooter && s.shooter !== s.konger)));
@@ -446,13 +570,13 @@ function ActionForm({
   return (
     <div>
       {action === "hu" && (<>
-        <h2>Tai</h2><Chips options={TAI.map((n) => ({ v: String(n), label: String(n) }))} value={s.tai ?? null} onChange={(v) => set("tai", v)} />
+        <h2>Tai</h2><Chips options={tais.map((n) => ({ v: String(n), label: String(n) }))} value={s.tai ?? null} onChange={(v) => set("tai", v)} />
         <h2>Winner</h2><Chips options={playerOpts} value={s.winner ?? null} onChange={(v) => set("winner", v)} />
         <h2>Discarder</h2><Chips options={playerOpts} value={s.discarder ?? null} onChange={(v) => set("discarder", v)} />
       </>)}
       {action === "zimo" && (<>
         <h2>Winner</h2><Chips options={playerOpts} value={s.winner ?? null} onChange={(v) => set("winner", v)} />
-        <h2>Tai</h2><Chips options={TAI.map((n) => ({ v: String(n), label: String(n) }))} value={s.tai ?? null} onChange={(v) => set("tai", v)} />
+        <h2>Tai</h2><Chips options={tais.map((n) => ({ v: String(n), label: String(n) }))} value={s.tai ?? null} onChange={(v) => set("tai", v)} />
       </>)}
       {action === "gang" && (<>
         <h2>Gang type</h2>
