@@ -9,11 +9,19 @@ create table if not exists trackers (
   id          uuid primary key default gen_random_uuid(),
   code        text unique not null,                 -- short share code (?startapp=)
   game        text not null default 'sg',           -- 'sg' for now
-  name        text not null,
-  players     jsonb not null,                        -- ["Alice","Bob",...]
+  name        text not null default '',
+  players     jsonb not null default '[]',           -- ["Alice","Bob",...]; [] = stub, not set up yet
   bases       jsonb not null default '{"tai":0.1,"yao":0.2,"gang":0.2}',
+  tg_chat_id  bigint unique,                         -- bound Telegram group (null = app-made "your own" group)
   created_at  timestamptz not null default now()
 );
+
+-- If the table already exists from the first version, add the new column:
+alter table trackers add column if not exists tg_chat_id bigint unique;
+-- Relax the not-null defaults so the bot can create empty stubs:
+alter table trackers alter column name set default '';
+alter table trackers alter column name drop not null;
+alter table trackers alter column players set default '[]';
 
 create table if not exists actions (
   id          uuid primary key default gen_random_uuid(),

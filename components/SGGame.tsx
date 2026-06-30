@@ -15,6 +15,7 @@ import {
   syncEnabled,
   startParamCode,
   createTracker,
+  setupGroup,
   getState,
   addRemoteAction,
   BOT_APP_LINK,
@@ -126,7 +127,26 @@ function SyncGame({ initialCode, onBack }: { initialCode: string | null; onBack:
     }
   }, [initialCode]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (state) return <SyncPlay initial={state} onBack={onBack} />;
+  if (state) {
+    // Configured group/tracker -> straight to the dashboard.
+    if (state.tracker.players.length >= 2) return <SyncPlay initial={state} onBack={onBack} />;
+    // Bot-created group stub nobody has set up yet -> Create New Group.
+    return (
+      <Setup
+        title="Create New Group"
+        startLabel="Create group"
+        onStart={async (name, players, bases) => {
+          setBusy(true); setError("");
+          try { setState(await setupGroup(state.tracker.code, name, players, bases)); }
+          catch (e) { setError(String((e as Error).message || e)); }
+          finally { setBusy(false); }
+        }}
+        onBack={onBack}
+        busy={busy}
+        error={error}
+      />
+    );
+  }
 
   if (mode === "create")
     return (
@@ -248,12 +268,14 @@ function Setup({
   onBack,
   busy,
   error,
+  startLabel,
 }: {
   title: string;
   onStart: (name: string, players: string[], bases: Bases) => void;
   onBack: () => void;
   busy?: boolean;
   error?: string;
+  startLabel?: string;
 }) {
   const [name, setName] = useState("");
   const [names, setNames] = useState(["", "", "", ""]);
@@ -285,7 +307,7 @@ function Setup({
           tai: parseFloat(tai) || 0.1, yao: parseFloat(yao) || 0.2, gang: parseFloat(gang) || 0.2,
         })}
       >
-        {busy ? "Creating…" : "Start game"}
+        {busy ? "Creating…" : startLabel || "Start game"}
       </button>
       {error && <p style={{ color: "#e54848" }}>{error}</p>}
       <button className="link-btn" onClick={onBack}>← Back</button>

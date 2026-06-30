@@ -51,6 +51,10 @@ async function call<T>(op: string, payload: Record<string, unknown>): Promise<T>
 export const createTracker = (name: string, players: string[], bases: Tracker["bases"]) =>
   call<TrackerState>("create", { name, players, bases });
 
+/** Fill in a bot-created group stub (code already exists, players still empty). */
+export const setupGroup = (code: string, name: string, players: string[], bases: Tracker["bases"]) =>
+  call<TrackerState>("setup-group", { code, name, players, bases });
+
 export const getState = (code: string) => call<TrackerState>("state", { code });
 
 export const addRemoteAction = (code: string, summary: string, transfers: Transfer[]) =>

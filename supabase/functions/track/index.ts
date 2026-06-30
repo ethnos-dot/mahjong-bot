@@ -93,6 +93,21 @@ Deno.serve(async (req) => {
       return json({ error: "could not allocate code" }, 500);
     }
 
+    if (op === "setup-group") {
+      // Fill in an existing (bot-created) group stub: name + players + bases.
+      const code = String((body as { code?: string }).code || "").toUpperCase();
+      const { name, players, bases } = body as unknown as { name: string; players: string[]; bases: unknown };
+      if (!name || !Array.isArray(players) || players.length < 2) return json({ error: "name + >=2 players required" }, 400);
+      const { data: tracker, error: e1 } = await sb
+        .from("trackers")
+        .update({ name, players, bases })
+        .eq("code", code)
+        .select()
+        .single();
+      if (e1 || !tracker) return json({ error: "group not found" }, 404);
+      return json({ tracker, actions: [] });
+    }
+
     if (op === "state" || op === "action") {
       const code = String((body as { code?: string }).code || "").toUpperCase();
       const { data: tracker, error: e1 } = await sb.from("trackers").select().eq("code", code).single();

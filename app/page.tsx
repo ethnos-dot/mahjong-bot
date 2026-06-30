@@ -15,8 +15,11 @@ export default function Page() {
   // Resolve the initial screen from ?type=; default to the game picker. Done in
   // an effect so the prerendered HTML and first client render match (no flash).
   useEffect(() => {
+    // Launched from a Telegram group/share link (startapp=<code>) -> go straight
+    // to the Singaporean group; the deep-link code is read inside SGGame.
+    const startParam = window.Telegram?.WebApp?.initDataUnsafe?.start_param;
     const t = new URLSearchParams(window.location.search).get("type");
-    setScreen(t === "riichi" ? "riichi" : t === "sg" ? "sg" : "picker");
+    setScreen(startParam ? "sg" : t === "riichi" ? "riichi" : t === "sg" ? "sg" : "picker");
   }, []);
 
   if (screen === null) return null;
