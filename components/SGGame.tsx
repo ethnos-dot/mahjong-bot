@@ -27,6 +27,8 @@ import {
   addRemoteAction,
   renameSeat,
   rememberGroup,
+  rememberGroupForChat,
+  lastGroupForChat,
   localGroups,
   setLocalGroups,
   GroupSummary,
@@ -80,9 +82,20 @@ export default function SGGame({ onOpenRiichi }: { onOpenRiichi: () => void }) {
   const inTelegram = typeof window !== "undefined" && Boolean(window.Telegram?.WebApp?.initData);
   const canSync = inTelegram && syncEnabled();
 
+  // When launched from a Telegram group chat we remember which tracker-group the
+  // account opened there, so a return trip jumps straight back into it. chatIdRef
+  // is the launching chat; chatCodesRef is every group bound to that chat.
+  const chatIdRef = useRef<number | undefined>(undefined);
+  const chatCodesRef = useRef<Set<string>>(new Set());
+  const noteChatGroup = (code: string) => {
+    const cid = chatIdRef.current;
+    if (cid !== undefined && chatCodesRef.current.has(code)) rememberGroupForChat(cid, code);
+  };
+
   // Enter a group: if you've claimed a seat -> dashboard; if not -> the Join
   // screen (take a seat / join as new). Only claimed groups become "yours".
   const enter = (s: TrackerState) => {
+    noteChatGroup(s.tracker.code);
     if (s.me) { rememberGroup(sumOf(s)); setJoining(null); setOpen(s); }
     else { setOpen(null); setJoining(s); }
   };
@@ -93,6 +106,7 @@ export default function SGGame({ onOpenRiichi }: { onOpenRiichi: () => void }) {
   useEffect(() => {
     setActive(localGroups()); // instant paint from the on-device cache
     const { tgChatId: cid, code } = parseStartParam();
+    chatIdRef.current = cid;
     if (cid !== undefined) setTgChatId(cid);
     if (!canSync) { setBooting(false); return; } // outside Telegram / unconfigured: nothing to load
 
@@ -108,15 +122,32 @@ export default function SGGame({ onOpenRiichi }: { onOpenRiichi: () => void }) {
       myGroups(),
       cid !== undefined ? listByChat(cid) : Promise.resolve({ groups: [] as GroupSummary[] }),
     ])
-      .then(([mine, chat]) => {
+      .then(async ([mine, chat]) => {
         // "Your groups" = the groups THIS account has claimed a seat in. The
         // server is the source of truth; we don't resurrect stale cache.
         const yours = mine.status === "fulfilled" ? mine.value.groups : localGroups();
         if (mine.status === "fulfilled") { setActive(yours); setLocalGroups(yours); }
+        // Every group bound to this Telegram chat (joined or not).
+        const chatAll = chat.status === "fulfilled" ? chat.value.groups : [];
+        chatCodesRef.current = new Set(chatAll.map((g) => g.code));
         // The chat's groups you're NOT already in -> a separate "join" list.
-        if (chat.status === "fulfilled") {
-          const mineCodes = new Set(yours.map((g) => g.code));
-          setChatGroups(chat.value.groups.filter((g) => !mineCodes.has(g.code)));
+        const mineCodes = new Set(yours.map((g) => g.code));
+        setChatGroups(chatAll.filter((g) => !mineCodes.has(g.code)));
+        // Launched from a Telegram group chat: jump straight into that chat's
+        // group instead of the home screen. Prefer the last group this account
+        // opened here; else the chat's only group. (Several groups and none
+        // remembered -> fall through to home so the user picks.)
+        if (cid !== undefined && chatAll.length) {
+          const remembered = lastGroupForChat(cid);
+          const target =
+            remembered && chatCodesRef.current.has(remembered)
+              ? remembered
+              : chatAll.length === 1
+                ? chatAll[0].code
+                : null;
+          if (target) {
+            try { enter(await openGroup(target)); } catch { /* stay on home */ }
+          }
         }
       })
       .finally(() => setBooting(false));
@@ -155,7 +186,11 @@ export default function SGGame({ onOpenRiichi }: { onOpenRiichi: () => void }) {
           : "After creating, pick which player you are."}
         onStart={async (name, players, bases) => {
           setBusy(true); setError("");
-          try { enter(await createTracker(name, players, bases, tgChatId)); }
+          try {
+            const st = await createTracker(name, players, bases, tgChatId);
+            if (tgChatId !== undefined) chatCodesRef.current.add(st.tracker.code);
+            enter(st);
+          }
           catch (e) { setError(String((e as Error).message || e)); }
           finally { setBusy(false); }
         }}

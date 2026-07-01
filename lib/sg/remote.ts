@@ -144,5 +144,23 @@ export function setLocalGroups(list: GroupSummary[]): void {
   localStorage.setItem(cacheKey(), JSON.stringify(list.slice(0, 50)));
 }
 
+// Per-chat "last opened group" memory: so re-launching the app from a Telegram
+// group chat jumps straight back into the group opened there last. Keyed per
+// account + per chat; on-device only (a convenience — the chat<->group binding
+// on the server is the source of truth).
+function chatLastKey(cid: number): string {
+  const uid =
+    typeof window !== "undefined" ? window.Telegram?.WebApp?.initDataUnsafe?.user?.id : undefined;
+  return `mahjong-lastgroup:${uid ?? "anon"}:${cid}`;
+}
+export function lastGroupForChat(cid: number): string | null {
+  if (typeof window === "undefined") return null;
+  try { return localStorage.getItem(chatLastKey(cid)) || null; } catch { return null; }
+}
+export function rememberGroupForChat(cid: number, code: string): void {
+  if (typeof window === "undefined") return;
+  try { localStorage.setItem(chatLastKey(cid), code); } catch { /* ignore */ }
+}
+
 /** Bot username for building shareable deep links. Override via env if needed. */
 export const BOT_APP_LINK = process.env.NEXT_PUBLIC_BOT_APP_LINK || "https://t.me/jpgmahjongbot/jpg";
