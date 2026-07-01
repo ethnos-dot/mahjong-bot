@@ -68,11 +68,24 @@ create or replace function add_player(p_id uuid, p_name text) returns void
 revoke all on function add_player(uuid, text) from public, anon, authenticated;
 grant execute on function add_player(uuid, text) to service_role;
 
--- Identity is the Telegram account (members.user_id); there is no global
--- username. A user's display name is their per-group SEAT (members.name),
--- defaulted from their Telegram name at join and renamable in-group.
--- (An earlier design had a unique global `profiles` table — dropped:)
-drop table if exists profiles;
+-- One global username per Telegram account, seeded from the user's Telegram
+-- @handle on first use and unique (case-insensitively) across all accounts.
+-- Independent of the per-group SEAT names in `members` (a seat defaults to this
+-- username at join but is still renamable per group). `auto_sync` = keep
+-- mirroring the Telegram @handle until the user picks a custom username.
+create table if not exists profiles (
+  user_id    bigint primary key,                  -- Telegram account id (from validated initData)
+  username   text not null,
+  auto_sync  boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+-- Migrations for an existing/older profiles table:
+alter table profiles add column if not exists auto_sync boolean not null default true;
+alter table profiles add column if not exists updated_at timestamptz not null default now();
+-- Case-insensitive uniqueness via a functional index (no two "Bob"/"bob").
+create unique index if not exists profiles_username_lc_key on profiles (lower(username));
+alter table profiles enable row level security;   -- no policies: only the Edge Function (service role) touches it
 
 -- Rename the caller's seat within a group (the per-group display name).
 -- Atomically rewrites: members.name (the seat), trackers.players (the roster

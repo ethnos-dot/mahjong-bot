@@ -31,6 +31,9 @@ import {
   lastGroupForChat,
   localGroups,
   setLocalGroups,
+  getMe,
+  setUsername,
+  Profile,
   GroupSummary,
   BOT_APP_LINK,
   TrackerState,
@@ -82,6 +85,13 @@ export default function SGGame({ onOpenRiichi }: { onOpenRiichi: () => void }) {
   const inTelegram = typeof window !== "undefined" && Boolean(window.Telegram?.WebApp?.initData);
   const canSync = inTelegram && syncEnabled();
 
+  // First-run profile / username gate.
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [needUsername, setNeedUsername] = useState(false);
+  const [gate, setGate] = useState<{ suggested: string; hasHandle: boolean }>({ suggested: "", hasHandle: true });
+  const [bootError, setBootError] = useState("");
+  const startRef = useRef<{ cid?: number; code?: string }>({});
+
   // When launched from a Telegram group chat we remember which tracker-group the
   // account opened there, so a return trip jumps straight back into it. chatIdRef
   // is the launching chat; chatCodesRef is every group bound to that chat.
@@ -100,60 +110,118 @@ export default function SGGame({ onOpenRiichi }: { onOpenRiichi: () => void }) {
     else { setOpen(null); setJoining(s); }
   };
 
-  // Resolve the launch. A direct group-code link opens that group; otherwise
-  // show the home (account groups + this chat's groups to join). No username
-  // gate — identity is the Telegram account; you pick a name when you join.
+  // Open a direct code link, else load home + auto-open this chat's group.
+  const resolveLaunch = async (cid?: number, code?: string) => {
+    if (code) {
+      setBusy(true);
+      try { enter(await openGroup(code)); }
+      catch (e) { setError(String((e as Error).message || e)); }
+      finally { setBusy(false); }
+      return;
+    }
+    const [mine, chat] = await Promise.allSettled([
+      myGroups(),
+      cid !== undefined ? listByChat(cid) : Promise.resolve({ groups: [] as GroupSummary[] }),
+    ]);
+    // "Your groups" = the groups THIS account has claimed a seat in. The server
+    // is the source of truth; we don't resurrect stale cache.
+    const yours = mine.status === "fulfilled" ? mine.value.groups : localGroups();
+    if (mine.status === "fulfilled") { setActive(yours); setLocalGroups(yours); }
+    // Every group bound to this Telegram chat (joined or not).
+    const chatAll = chat.status === "fulfilled" ? chat.value.groups : [];
+    chatCodesRef.current = new Set(chatAll.map((g) => g.code));
+    const mineCodes = new Set(yours.map((g) => g.code));
+    setChatGroups(chatAll.filter((g) => !mineCodes.has(g.code)));
+    // Launched from a Telegram group chat: jump straight into that chat's group.
+    // Prefer the last group opened here; else the chat's only one.
+    if (cid !== undefined && chatAll.length) {
+      const remembered = lastGroupForChat(cid);
+      const target =
+        remembered && chatCodesRef.current.has(remembered)
+          ? remembered
+          : chatAll.length === 1
+            ? chatAll[0].code
+            : null;
+      if (target) { try { enter(await openGroup(target)); } catch { /* stay on home */ } }
+    }
+  };
+
+  // Boot: load this account's profile first. No username yet -> first-run gate;
+  // otherwise resolve the launch. Kept in a function so a transient failure can
+  // be retried instead of stranding the user.
+  // Fetch the profile, retrying transient failures. An "unknown op" error means
+  // this front-end is newer than the deployed edge function; rethrow so the
+  // caller can degrade gracefully instead of bricking on a stale bundle / race.
+  const getMeRetry = async (tries = 3): Promise<Awaited<ReturnType<typeof getMe>>> => {
+    let last: unknown;
+    for (let i = 0; i < tries; i++) {
+      try { return await getMe(); }
+      catch (e) {
+        last = e;
+        if (/unknown op/i.test(String((e as Error).message || e))) throw e; // won't change on retry
+        if (i < tries - 1) await new Promise((r) => setTimeout(r, 500 * (i + 1)));
+      }
+    }
+    throw last;
+  };
+
+  const runBoot = async () => {
+    setBooting(true); setBootError("");
+    const { cid, code } = startRef.current;
+    try {
+      let me: Awaited<ReturnType<typeof getMe>>;
+      try {
+        me = await getMeRetry();
+      } catch (e) {
+        // Function not upgraded yet (old cached bundle / mid-deploy): don't gate,
+        // just run the app without usernames so nobody is locked out.
+        if (/unknown op/i.test(String((e as Error).message || e))) { await resolveLaunch(cid, code); return; }
+        throw e; // genuine failure -> retryable bootError screen
+      }
+      if (!me.profile) {
+        setGate({ suggested: me.suggested || "", hasHandle: me.hasHandle !== false });
+        setNeedUsername(true);
+        return;
+      }
+      setProfile(me.profile);
+      await resolveLaunch(cid, code);
+    } catch (e) {
+      setBootError(String((e as Error).message || e));
+    } finally {
+      setBooting(false);
+    }
+  };
+
+  // Finish the first-run gate: keep the username, then resolve the launch.
+  const finishGate = async (p: Profile) => {
+    setProfile(p); setNeedUsername(false); setBooting(true);
+    const { cid, code } = startRef.current;
+    try { await resolveLaunch(cid, code); }
+    finally { setBooting(false); }
+  };
+
   useEffect(() => {
     setActive(localGroups()); // instant paint from the on-device cache
     const { tgChatId: cid, code } = parseStartParam();
+    startRef.current = { cid, code };
     chatIdRef.current = cid;
     if (cid !== undefined) setTgChatId(cid);
-    if (!canSync) { setBooting(false); return; } // outside Telegram / unconfigured: nothing to load
-
-    if (code) {
-      setBusy(true);
-      openGroup(code)
-        .then(enter)
-        .catch((e) => setError(String((e as Error).message || e)))
-        .finally(() => { setBusy(false); setBooting(false); });
-      return;
-    }
-    Promise.allSettled([
-      myGroups(),
-      cid !== undefined ? listByChat(cid) : Promise.resolve({ groups: [] as GroupSummary[] }),
-    ])
-      .then(async ([mine, chat]) => {
-        // "Your groups" = the groups THIS account has claimed a seat in. The
-        // server is the source of truth; we don't resurrect stale cache.
-        const yours = mine.status === "fulfilled" ? mine.value.groups : localGroups();
-        if (mine.status === "fulfilled") { setActive(yours); setLocalGroups(yours); }
-        // Every group bound to this Telegram chat (joined or not).
-        const chatAll = chat.status === "fulfilled" ? chat.value.groups : [];
-        chatCodesRef.current = new Set(chatAll.map((g) => g.code));
-        // The chat's groups you're NOT already in -> a separate "join" list.
-        const mineCodes = new Set(yours.map((g) => g.code));
-        setChatGroups(chatAll.filter((g) => !mineCodes.has(g.code)));
-        // Launched from a Telegram group chat: jump straight into that chat's
-        // group instead of the home screen. Prefer the last group this account
-        // opened here; else the chat's only group. (Several groups and none
-        // remembered -> fall through to home so the user picks.)
-        if (cid !== undefined && chatAll.length) {
-          const remembered = lastGroupForChat(cid);
-          const target =
-            remembered && chatCodesRef.current.has(remembered)
-              ? remembered
-              : chatAll.length === 1
-                ? chatAll[0].code
-                : null;
-          if (target) {
-            try { enter(await openGroup(target)); } catch { /* stay on home */ }
-          }
-        }
-      })
-      .finally(() => setBooting(false));
+    if (!canSync) { setBooting(false); return; } // outside Telegram / unconfigured
+    runBoot();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   if (booting) return null;
+  if (bootError)
+    return (
+      <div>
+        <h1>Mahjong</h1>
+        <p style={{ color: "#e54848" }}>Couldn&apos;t load: {bootError}</p>
+        <button className="primary-btn" onClick={runBoot}>Try again</button>
+      </div>
+    );
+  if (needUsername)
+    return <UsernameGate suggested={gate.suggested} hasHandle={gate.hasHandle} onDone={finishGate} />;
 
   // Re-read the cache on returning home so a just-created/joined/opened group
   // shows in "Your groups" — and drops out of the chat's "to join" list.
@@ -174,7 +242,7 @@ export default function SGGame({ onOpenRiichi }: { onOpenRiichi: () => void }) {
   if (open) return <SyncPlay initial={open} onBack={goHome} />;
 
   if (joining)
-    return <JoinGroup state={joining} busy={busy} onClaimed={enter}
+    return <JoinGroup state={joining} busy={busy} defaultName={profile?.username || ""} onClaimed={enter}
       onBack={() => { setJoining(null); goHome(); }} />;
 
   if (view === "create")
@@ -206,6 +274,7 @@ export default function SGGame({ onOpenRiichi }: { onOpenRiichi: () => void }) {
   return (
     <div>
       <h1>Mahjong</h1>
+      {profile && <ProfileHeader profile={profile} onChange={setProfile} />}
       {!inTelegram && <p style={{ color: "#e54848", fontSize: "0.85rem" }}>Open this inside Telegram to use shared groups.</p>}
       {error && <p style={{ color: "#e54848" }}>{error}</p>}
 
@@ -250,6 +319,75 @@ export default function SGGame({ onOpenRiichi }: { onOpenRiichi: () => void }) {
   );
 }
 
+// First-run gate: choose a unique app username (pre-filled with the Telegram
+// handle when there is one). Blocks the app until set — there's no back.
+function UsernameGate({ suggested, hasHandle, onDone }: { suggested: string; hasHandle: boolean; onDone: (p: Profile) => void }) {
+  const [name, setName] = useState(hasHandle ? suggested : "");
+  const [err, setErr] = useState("");
+  const [saving, setSaving] = useState(false);
+  const valid = /^[A-Za-z0-9_]{3,20}$/.test(name.trim());
+  const submit = async () => {
+    if (!valid) { setErr("3–20 letters, numbers or underscores."); haptic("error"); return; }
+    setSaving(true); setErr("");
+    try { const { profile } = await setUsername(name.trim()); haptic("success"); onDone(profile); }
+    catch (e) { haptic("error"); setErr(String((e as Error).message || e)); }
+    finally { setSaving(false); }
+  };
+  return (
+    <div>
+      <h1>Pick a username</h1>
+      <p style={{ opacity: 0.8, fontSize: "0.9rem" }}>
+        {hasHandle
+          ? "This is your name across the app. We suggested your Telegram handle — keep it and it stays in sync when you rename on Telegram, or type your own to fix it."
+          : "This is your name across the app. You don't have a Telegram username, so choose one."}
+      </p>
+      <input className="text-input" autoFocus value={name} maxLength={20} placeholder="username"
+        onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submit(); }} />
+      <button className="primary-btn" disabled={!valid || saving} onClick={submit}>
+        {saving ? "Saving…" : "Continue"}
+      </button>
+      {err && <p style={{ color: "#e54848" }}>{err}</p>}
+      <p style={{ opacity: 0.55, fontSize: "0.78rem" }}>3–20 letters, numbers or underscores. Must be unique.</p>
+    </div>
+  );
+}
+
+// Home header: shows your username with an inline editor. Changing it away from
+// your Telegram handle stops the auto-mirroring (handled server-side).
+function ProfileHeader({ profile, onChange }: { profile: Profile; onChange: (p: Profile) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(profile.username);
+  const [err, setErr] = useState("");
+  const [saving, setSaving] = useState(false);
+  const valid = /^[A-Za-z0-9_]{3,20}$/.test(name.trim());
+  const save = async () => {
+    const nm = name.trim();
+    if (nm === profile.username) { setEditing(false); return; }
+    if (!valid) { setErr("3–20 letters, numbers or underscores."); return; }
+    setSaving(true); setErr("");
+    try { const { profile: p } = await setUsername(nm); haptic("success"); onChange(p); setEditing(false); }
+    catch (e) { haptic("error"); setErr(String((e as Error).message || e)); }
+    finally { setSaving(false); }
+  };
+  if (!editing)
+    return (
+      <p style={{ opacity: 0.7, fontSize: "0.85rem", marginTop: 0 }}>
+        Signed in as <strong>{profile.username}</strong>{" "}
+        <button className="link-btn" style={{ padding: 0, fontSize: "inherit", verticalAlign: "baseline" }}
+          onClick={() => { setName(profile.username); setErr(""); setEditing(true); }}>✎</button>
+      </p>
+    );
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <input className="text-input small" autoFocus value={name} maxLength={20}
+        onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") save(); }} />
+      <button className="chip" disabled={saving} onClick={save}>Save</button>
+      <button className="chip" onClick={() => setEditing(false)}>Cancel</button>
+      {err && <span style={{ color: "#e54848", fontSize: "0.8rem" }}> {err}</span>}
+    </div>
+  );
+}
+
 function JoinForm({
   initialCode,
   busy,
@@ -290,11 +428,13 @@ function JoinForm({
 function JoinGroup({
   state,
   busy,
+  defaultName,
   onClaimed,
   onBack,
 }: {
   state: TrackerState;
   busy: boolean;
+  defaultName: string;
   onClaimed: (s: TrackerState) => void;
   onBack: () => void;
 }) {
@@ -303,15 +443,13 @@ function JoinGroup({
   const roster = new Set(state.tracker.players || []); // every seat name in this group
   const claimed = new Set(state.claimedNames || []);
   const unclaimed = (state.tracker.players || []).filter((p) => !claimed.has(p));
-  const u = typeof window !== "undefined" ? window.Telegram?.WebApp?.initDataUnsafe?.user : undefined;
-  // Pre-fill the new-player name from your Telegram name — but never a name
-  // that's already a seat here (else "Join as X" would 409 on the unique
-  // (group, name)). If your Telegram name collides, suffix a number so the
-  // field is never blank.
-  const tgName = (u?.first_name || u?.username || "").trim();
-  let suggestedName = [u?.first_name, u?.username].map((c) => (c || "").trim()).find((c) => c && !roster.has(c)) || "";
-  if (!suggestedName && tgName) {
-    for (let i = 2; i < 99 && !suggestedName; i++) if (!roster.has(`${tgName} ${i}`)) suggestedName = `${tgName} ${i}`;
+  // Pre-fill the new-player name from your app username — but never a name
+  // already taken as a seat here (else "Join as X" would 409 on the unique
+  // (group, name)). Suffix a number on collision so the field is never blank.
+  const base = (defaultName || "").trim();
+  let suggestedName = base && !roster.has(base) ? base : "";
+  if (!suggestedName && base) {
+    for (let i = 2; i < 99 && !suggestedName; i++) if (!roster.has(`${base}${i}`)) suggestedName = `${base}${i}`;
   }
   const [newName, setNewName] = useState(suggestedName);
   const [working, setWorking] = useState(false);

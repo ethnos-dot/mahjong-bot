@@ -65,6 +65,20 @@ export interface GroupSummary {
   players: number;
 }
 
+export interface Profile {
+  username: string;
+}
+
+/** This account's global username (null on first ever use) + an available
+ *  suggestion to pre-fill the "pick a username" gate. `hasHandle` is false when
+ *  the account has no Telegram @username (so the UI asks them to make one). */
+export const getMe = () =>
+  call<{ profile: Profile | null; suggested: string; hasHandle?: boolean }>("me", {});
+
+/** Claim or change this account's unique username. Throws "that username is
+ *  taken" (409) if another account already has it. */
+export const setUsername = (username: string) => call<{ profile: Profile }>("set-username", { username });
+
 /** Rename your own seat in a group (your per-group display name). Rewrites the
  *  roster + past transfers server-side so balances stay correct. Throws "that
  *  name is taken in this group" (409) if another seat already uses it. */
